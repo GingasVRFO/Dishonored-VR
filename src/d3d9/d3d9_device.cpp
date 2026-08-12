@@ -31,6 +31,9 @@
 #endif
 
 #include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <cmath>
 
 namespace dxvk {
 
@@ -49,6 +52,38 @@ namespace dxvk {
   static bool    fmActive = false;
   static int32_t fmDraw   = 0;
   static int32_t fmRtSw   = 0;
+
+  // ==== VR-fork M3: stereo splice v1 =======================================
+  // Armed by a "dxvk_stereo.txt" marker beside the game exe, optionally
+  // containing "sep=<f> conv=<f>". Frame map (see FRAME_MAP.md) established:
+  //   c0-c3 = ViewProjection rows (row-vector convention, camera-relative),
+  //   c5    = camera world position, c6+ = per-draw LocalToWorld / bones.
+  // Each qualifying scene draw is replayed into left/right half viewports
+  // with a per-eye clip-space shift:
+  //   clip.x' = clip.x + s*clip.w - s*conv     (s = -sep left, +sep right)
+  // which is exactly sheared-frustum stereo for a camera-relative VP: the
+  // s*conv term (row3, multiplied by p.w=1) is the true eye translation, the
+  // s*w term is the frustum shear; zero parallax lands at distance w = conv
+  // (world units). Depth pre-pass draws qualify too (same gate), so EQUAL
+  // depth tests in the base pass stay consistent per eye.
+  static float stSep  = 0.015f;
+  static float stConv = 60.0f;
+  static bool  stArmed = [] {
+    std::FILE* f = std::fopen("dxvk_stereo.txt", "r");
+    if (!f) return false;
+    char buf[256] = {};
+    size_t got = std::fread(buf, 1, sizeof(buf) - 1, f);
+    buf[got] = '\0';
+    std::fclose(f);
+    if (const char* s = std::strstr(buf, "sep="))
+      stSep = std::strtof(s + 4, nullptr);
+    if (const char* c = std::strstr(buf, "conv="))
+      stConv = std::strtof(c + 5, nullptr);
+    return true;
+  }();
+  static float stVP[16] = {};
+  static bool  stHaveVP = false;
+  static bool  stInDup  = false;
 
   D3D9DeviceEx::D3D9DeviceEx(
           D3D9InterfaceEx*       pParent,
@@ -3119,6 +3154,51 @@ namespace dxvk {
       Logger::info(str::format("FM d", fmDraw++, " DIP prim=",
         (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices));
 
+    // M3: stereo splice. Qualifying scene draws are replayed once per eye
+    // into half viewports with a per-eye shifted VP. Gate:
+    //  - a c0 x4 upload has been seen and it is perspective (the w-column,
+    //    elements 3/7/11 of the register block, is the view-forward vector,
+    //    norm ~1 for perspective, ~0 for ortho/UI),
+    //  - the bound RT0 is large landscape and the viewport covers all of it
+    //    (excludes shadow passes, bloom/LUT tiles, the 800x800 light tile),
+    //  - the draw is real geometry, not a full-screen quad (PrimitiveCount>2
+    //    keeps resolve/post quads mono - they are per-pixel copies, so they
+    //    preserve the side-by-side layout),
+    //  - no state block is recording.
+    if (stArmed && !stInDup && stHaveVP && PrimitiveCount > 2
+     && !ShouldRecord()) {
+      float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
+      const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const D3DVIEWPORT9 savedVp = m_state.viewport;
+      if (fw > 0.5f && stRt != nullptr
+       && stRt->Desc()->Width  == savedVp.Width
+       && stRt->Desc()->Height == savedVp.Height
+       && savedVp.X == 0 && savedVp.Y == 0
+       && savedVp.Width >= 1024 && savedVp.Width > savedVp.Height) {
+        stInDup = true;
+        D3DVIEWPORT9 half = savedVp;
+        half.Width = savedVp.Width / 2;
+        float eye[16];
+        for (uint32_t e = 0; e < 2; e++) {
+          float s = e == 0 ? -stSep : stSep;
+          std::memcpy(eye, stVP, sizeof(eye));
+          eye[0]  += s * eye[3];
+          eye[4]  += s * eye[7];
+          eye[8]  += s * eye[11];
+          eye[12] += s * eye[15] - s * stConv;
+          half.X = e == 0 ? 0 : savedVp.Width - half.Width;
+          SetViewport(&half);
+          SetVertexShaderConstantF(0, eye, 4);
+          DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
+            MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
+        }
+        SetVertexShaderConstantF(0, stVP, 4);
+        SetViewport(&savedVp);
+        stInDup = false;
+        return D3D_OK;
+      }
+    }
+
     bool dynamicSysmemVBOs = false;
     bool dynamicSysmemIBO = false;
 
@@ -3647,6 +3727,14 @@ namespace dxvk {
       Logger::info(str::format("FM c", StartRegister, " x", Vector4fCount,
         " [", pConstantData[0], " ", pConstantData[1], " ",
         pConstantData[2], " ", pConstantData[3], "] @d", fmDraw));
+
+    // M3: capture the game's ViewProjection upload (c0-c3). Skip our own
+    // per-eye re-uploads (stInDup) so the original matrix stays authoritative.
+    if (stArmed && !stInDup && StartRegister == 0
+     && Vector4fCount >= 4 && pConstantData != nullptr) {
+      std::memcpy(stVP, pConstantData, 16 * sizeof(float));
+      stHaveVP = true;
+    }
 
     return SetShaderConstants<
       D3D9ShaderType::VertexShader,
