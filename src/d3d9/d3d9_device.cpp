@@ -30,7 +30,25 @@
 #pragma fenv_access (on)
 #endif
 
+#include <cstdio>
+
 namespace dxvk {
+
+  // ==== VR-fork M2: frame-map instrumentation ==============================
+  // Armed by a "dxvk_framemap.txt" marker beside the game exe. Frames 1200,
+  // 6000 and 12000 are dumped in full - every render-target switch (with
+  // dimensions), every draw, every viewport, and every low-register VS float
+  // constant upload (where UE3 keeps its view-projection), in order. This is
+  // the map the stereo splice (M3) gets built from.
+  static bool fmArmed = [] {
+    std::FILE* f = std::fopen("dxvk_framemap.txt", "r");
+    if (f) { std::fclose(f); return true; }
+    return false;
+  }();
+  static int32_t fmFrame  = 0;
+  static bool    fmActive = false;
+  static int32_t fmDraw   = 0;
+  static int32_t fmRtSw   = 0;
 
   D3D9DeviceEx::D3D9DeviceEx(
           D3D9InterfaceEx*       pParent,
@@ -1655,6 +1673,18 @@ namespace dxvk {
     if (unlikely(RenderTargetIndex >= caps::MaxSimultaneousRenderTargets))
       return D3DERR_INVALIDCALL;
 
+    if (fmActive) {
+      D3D9Surface* fmRt = static_cast<D3D9Surface*>(pRenderTarget);
+      D3D9CommonTexture* fmTex = fmRt != nullptr ? fmRt->GetCommonTexture() : nullptr;
+      fmRtSw += 1;
+      if (fmTex != nullptr)
+        Logger::info(str::format("FM rt", RenderTargetIndex, " ",
+          fmTex->Desc()->Width, "x", fmTex->Desc()->Height,
+          " fmt=", (int32_t)fmTex->Desc()->Format, " @d", fmDraw));
+      else
+        Logger::info(str::format("FM rt", RenderTargetIndex, " null @d", fmDraw));
+    }
+
     D3D9Surface* rt = static_cast<D3D9Surface*>(pRenderTarget);
     D3D9CommonTexture* texInfo = rt != nullptr
       ? rt->GetCommonTexture()
@@ -2104,6 +2134,9 @@ namespace dxvk {
 
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetViewport(const D3DVIEWPORT9* pViewport) {
+    if (fmActive && pViewport != nullptr)
+      Logger::info(str::format("FM vp ", pViewport->X, ",", pViewport->Y, " ",
+        pViewport->Width, "x", pViewport->Height, " @d", fmDraw));
     D3D9DeviceLock lock = LockDevice();
 
     // Outright crashes on native, but let's be
@@ -3026,6 +3059,10 @@ namespace dxvk {
     if (unlikely(!PrimitiveCount))
       return D3D_OK;
 
+    if (fmActive)
+      Logger::info(str::format("FM d", fmDraw++, " DP prim=",
+        (int32_t)PrimitiveType, " n=", PrimitiveCount));
+
     bool dynamicSysmemVBOs = false;
 
     uint32_t firstIndex     = 0;
@@ -3077,6 +3114,10 @@ namespace dxvk {
 
     if (unlikely(!PrimitiveCount || !NumVertices))
       return D3D_OK;
+
+    if (fmActive)
+      Logger::info(str::format("FM d", fmDraw++, " DIP prim=",
+        (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices));
 
     bool dynamicSysmemVBOs = false;
     bool dynamicSysmemIBO = false;
@@ -3601,6 +3642,11 @@ namespace dxvk {
     const float* pConstantData,
           UINT   Vector4fCount) {
     D3D9DeviceLock lock = LockDevice();
+
+    if (fmActive && StartRegister < 8 && pConstantData != nullptr)
+      Logger::info(str::format("FM c", StartRegister, " x", Vector4fCount,
+        " [", pConstantData[0], " ", pConstantData[1], " ",
+        pConstantData[2], " ", pConstantData[3], "] @d", fmDraw));
 
     return SetShaderConstants<
       D3D9ShaderType::VertexShader,
@@ -4234,6 +4280,18 @@ namespace dxvk {
           HWND hDestWindowOverride,
     const RGNDATA* pDirtyRegion,
           DWORD dwFlags) {
+
+    if (fmArmed) {
+      if (fmActive)
+        Logger::info(str::format("FM ", fmFrame, " END draws=", fmDraw,
+                                 " rtsw=", fmRtSw));
+      fmFrame += 1;
+      fmActive = (fmFrame == 1200 || fmFrame == 6000 || fmFrame == 12000);
+      if (fmActive) {
+        fmDraw = 0; fmRtSw = 0;
+        Logger::info(str::format("FM ", fmFrame, " BEGIN"));
+      }
+    }
 
     if (m_cursor.IsSoftwareCursor()) {
       D3D9_SOFTWARE_CURSOR* pSoftwareCursor = m_cursor.GetSoftwareCursor();
