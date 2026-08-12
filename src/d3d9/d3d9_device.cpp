@@ -3196,14 +3196,17 @@ namespace dxvk {
     //    norm ~1 for perspective, ~0 for ortho/UI),
     //  - the bound RT0 is large landscape and the viewport covers all of it
     //    (excludes shadow passes, bloom/LUT tiles, the 800x800 light tile),
-    //  - the draw is real geometry, not a full-screen quad. M3.4: back to the
-    //    strict PrimitiveCount>2 gate - the proven-visible M3.1 behavior.
-    //    Both attempts to also splice world-placed 2-tri quads (c6 identity
-    //    in M3.2, ZENABLE in M3.3) misclassified scene-copy quads and
-    //    shredded the frame; the phantom-quad fix returns once an armed dump
-    //    with per-draw depth state identifies the real discriminator.
+    //  - the draw is real geometry: more than 2 primitives, or depth-tested.
+    //    MEASURED (framemap run 3): every escaped-mono small draw in gameplay
+    //    frames is world geometry with zen=1/zf=LESSEQUAL (opaque boards,
+    //    blended glass, refractive glass) - splicing them is safe and fixes
+    //    the one-eye phantom quads. Screen-space content runs zen=0/zf=ALWAYS
+    //    and stays mono. (The M3.2/M3.3 shredding was never this gate - it
+    //    was the UP-path duplication hitting scene blits; see DrawPrimitiveUP.)
     //  - no state block is recording.
-    if (stArmed && !stInDup && stHaveVP && PrimitiveCount > 2
+    if (stArmed && !stInDup && stHaveVP
+     && (PrimitiveCount > 2
+      || m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE)
      && !ShouldRecord()) {
       float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
       const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
@@ -3322,9 +3325,38 @@ namespace dxvk {
         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
     }
 
-    // M3.4: UP duplication disabled pending evidence - full-size UP draws can
-    // include scene blits, and duplicating those shreds the frame the same
-    // way as splicing copy quads. Returns with a measured discriminator.
+    // M3.5: HUD/UI both-eyes duplication, MEASURED gate. Full-size UP draws
+    // split cleanly (framemap run 3): 208 UI draws sample plain textures
+    // (fonts/shapes, tex0 not a render target) - duplicating puts the HUD in
+    // both eyes; 80 scene blits sample the full-size RT - duplicating THOSE
+    // recursively squeezed the SBS pair and shredded the frame in M3.2/M3.3.
+    // Gate: only duplicate when tex0 is not a render target.
+    if (stArmed && !stInDup && !ShouldRecord()) {
+      const D3D9CommonTexture* upT0 = GetCommonTexture(m_state.textures[0]);
+      const bool upSamplesRt = upT0 != nullptr
+        && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
+      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const D3DVIEWPORT9 upSaved = m_state.viewport;
+      if (!upSamplesRt && upRt2 != nullptr
+       && upRt2->Desc()->Width  == upSaved.Width
+       && upRt2->Desc()->Height == upSaved.Height
+       && upSaved.X == 0 && upSaved.Y == 0
+       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
+        stInDup = true;
+        D3DVIEWPORT9 upHalf = upSaved;
+        upHalf.Width = upSaved.Width / 2;
+        for (uint32_t e = 0; e < 2; e++) {
+          upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+          SetViewport(&upHalf);
+          DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+            pVertexStreamZeroData, VertexStreamZeroStride);
+        }
+        SetViewport(&upSaved);
+        stInDup = false;
+        stSpliceAccum += 1;
+        return D3D_OK;
+      }
+    }
 
     PrepareDraw(PrimitiveType, false, false);
 
@@ -3401,7 +3433,34 @@ namespace dxvk {
         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
     }
 
-    // M3.4: UP duplication disabled pending evidence (see DrawPrimitiveUP).
+    // M3.5: HUD/UI both-eyes duplication, measured gate (see DrawPrimitiveUP).
+    if (stArmed && !stInDup && !ShouldRecord()) {
+      const D3D9CommonTexture* upT0 = GetCommonTexture(m_state.textures[0]);
+      const bool upSamplesRt = upT0 != nullptr
+        && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
+      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const D3DVIEWPORT9 upSaved = m_state.viewport;
+      if (!upSamplesRt && upRt2 != nullptr
+       && upRt2->Desc()->Width  == upSaved.Width
+       && upRt2->Desc()->Height == upSaved.Height
+       && upSaved.X == 0 && upSaved.Y == 0
+       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
+        stInDup = true;
+        D3DVIEWPORT9 upHalf = upSaved;
+        upHalf.Width = upSaved.Width / 2;
+        for (uint32_t e = 0; e < 2; e++) {
+          upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+          SetViewport(&upHalf);
+          DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+            PrimitiveCount, pIndexData, IndexDataFormat,
+            pVertexStreamZeroData, VertexStreamZeroStride);
+        }
+        SetViewport(&upSaved);
+        stInDup = false;
+        stSpliceAccum += 1;
+        return D3D_OK;
+      }
+    }
 
     PrepareDraw(PrimitiveType, false, false);
 
