@@ -97,6 +97,12 @@ namespace dxvk {
   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_splices = 0;
   static uint32_t stSpliceAccum = 0;
 
+  // M3.6: live projection scales of the main-camera VP (xs, ys - the norms of
+  // clip-x/clip-y columns). The proxy reads these to size its presentation
+  // quads from the FOV the game is ACTUALLY rendering this frame, instead of
+  // a configured constant. Kills cutscene forced-zoom and FOV-mismatch warp.
+  extern "C" __declspec(dllexport) volatile float dxvk_vr_proj[2] = {0.0f, 0.0f};
+
   // M3.1: water/mirror reflection passes upload a VP whose upper 3x3 has a
   // negative determinant. Splicing those warps the reflection, so skip.
   static inline float StDet3(const float* m) {
@@ -3879,6 +3885,23 @@ namespace dxvk {
      && Vector4fCount >= 4 && pConstantData != nullptr) {
       std::memcpy(stVP, pConstantData, 16 * sizeof(float));
       stHaveVP = true;
+
+      // M3.6: publish the main camera's projection scales. Gate to the main
+      // scene camera: perspective, not mirrored, and uploaded while a
+      // backbuffer-sized RT with a full viewport is bound (excludes the
+      // shadow camera, which uploads its VP with a half-size viewport).
+      float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
+      if (fw > 0.5f && StDet3(stVP) > 0.0f) {
+        const D3D9CommonTexture* pjRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+        const auto& pjVp = m_state.viewport;
+        if (pjRt != nullptr
+         && pjRt->Desc()->Width  == pjVp.Width
+         && pjRt->Desc()->Height == pjVp.Height
+         && pjVp.Width >= 1024 && pjVp.Width > pjVp.Height) {
+          dxvk_vr_proj[0] = std::sqrt(stVP[0] * stVP[0] + stVP[4] * stVP[4] + stVP[8]  * stVP[8]);
+          dxvk_vr_proj[1] = std::sqrt(stVP[1] * stVP[1] + stVP[5] * stVP[5] + stVP[9]  * stVP[9]);
+        }
+      }
     }
 
 
