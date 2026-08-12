@@ -85,6 +85,25 @@ namespace dxvk {
   static bool  stHaveVP = false;
   static bool  stInDup  = false;
 
+  // M3.2: last per-draw LocalToWorld (c6-c9, count==4 uploads only - larger
+  // counts at c6 are skinned bone rows). Distinguishes WORLD quads (glass
+  // panes, decals: real transform, must be spliced - unspliced they render
+  // full-frame and land as phantoms in one eye) from SCREEN-SPACE quads
+  // (post/resolve: identity transform, must stay mono - splicing them
+  // squeezes the full frame into each half). Measured in framemap run 2:
+  // every escaped-mono draw was a 4-vertex quad, and post quads are
+  // preceded by an identity c6 upload.
+  static float stC6[16] = {};
+  static bool  stHaveC6 = false;
+  static inline bool StC6Identity() {
+    for (uint32_t i = 0; i < 16; i++) {
+      float want = (i % 5 == 0) ? 1.0f : 0.0f;
+      if (std::fabs(stC6[i] - want) > 1e-4f)
+        return false;
+    }
+    return true;
+  }
+
   // M3.1: per-frame spliced-draw count, exported so the VR proxy (the d3d9
   // shim that chain-loads this dll) can tell stereo frames from flat ones
   // (menus, loading screens, videos) and present those mono. Updated at
@@ -3182,11 +3201,14 @@ namespace dxvk {
     //    norm ~1 for perspective, ~0 for ortho/UI),
     //  - the bound RT0 is large landscape and the viewport covers all of it
     //    (excludes shadow passes, bloom/LUT tiles, the 800x800 light tile),
-    //  - the draw is real geometry, not a full-screen quad (PrimitiveCount>2
-    //    keeps resolve/post quads mono - they are per-pixel copies, so they
-    //    preserve the side-by-side layout),
+    //  - the draw is real geometry: more than 2 primitives, OR a small quad
+    //    with a non-identity LocalToWorld (world-placed glass/decals - these
+    //    MUST be spliced or they render full-frame and phantom in one eye).
+    //    Identity-c6 quads are screen-space resolve/post copies and stay
+    //    mono - they are per-pixel copies, so they preserve the SBS layout,
     //  - no state block is recording.
-    if (stArmed && !stInDup && stHaveVP && PrimitiveCount > 2
+    if (stArmed && !stInDup && stHaveVP
+     && (PrimitiveCount > 2 || (stHaveC6 && !StC6Identity()))
      && !ShouldRecord()) {
       float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
       const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
@@ -3298,6 +3320,35 @@ namespace dxvk {
         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
     }
 
+    // M3.2: HUD/UI both-eyes duplication. UE3's Canvas/Scaleform UI comes
+    // through the *UP paths with shader-transformed vertices (posT=0,
+    // measured), so the viewport transform applies - replaying the draw into
+    // each half viewport puts the HUD in both eyes at screen depth. No
+    // constant changes: UI transforms don't live in c0-c3.
+    if (stArmed && !stInDup && !ShouldRecord()) {
+      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const D3DVIEWPORT9 upSaved = m_state.viewport;
+      if (upRt2 != nullptr
+       && upRt2->Desc()->Width  == upSaved.Width
+       && upRt2->Desc()->Height == upSaved.Height
+       && upSaved.X == 0 && upSaved.Y == 0
+       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
+        stInDup = true;
+        D3DVIEWPORT9 upHalf = upSaved;
+        upHalf.Width = upSaved.Width / 2;
+        for (uint32_t e = 0; e < 2; e++) {
+          upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+          SetViewport(&upHalf);
+          DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+            pVertexStreamZeroData, VertexStreamZeroStride);
+        }
+        SetViewport(&upSaved);
+        stInDup = false;
+        stSpliceAccum += 1;   // UI dup counts as stereo content for the proxy
+        return D3D_OK;
+      }
+    }
+
     PrepareDraw(PrimitiveType, false, false);
 
     uint32_t vertexCount = GetVertexCount(PrimitiveType, PrimitiveCount);
@@ -3364,6 +3415,32 @@ namespace dxvk {
                 upRt ? (int32_t)upRt->Desc()->Height : -1,
         " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
+    }
+
+    // M3.2: HUD/UI both-eyes duplication (see DrawPrimitiveUP).
+    if (stArmed && !stInDup && !ShouldRecord()) {
+      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const D3DVIEWPORT9 upSaved = m_state.viewport;
+      if (upRt2 != nullptr
+       && upRt2->Desc()->Width  == upSaved.Width
+       && upRt2->Desc()->Height == upSaved.Height
+       && upSaved.X == 0 && upSaved.Y == 0
+       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
+        stInDup = true;
+        D3DVIEWPORT9 upHalf = upSaved;
+        upHalf.Width = upSaved.Width / 2;
+        for (uint32_t e = 0; e < 2; e++) {
+          upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+          SetViewport(&upHalf);
+          DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+            PrimitiveCount, pIndexData, IndexDataFormat,
+            pVertexStreamZeroData, VertexStreamZeroStride);
+        }
+        SetViewport(&upSaved);
+        stInDup = false;
+        stSpliceAccum += 1;   // UI dup counts as stereo content for the proxy
+        return D3D_OK;
+      }
     }
 
     PrepareDraw(PrimitiveType, false, false);
@@ -3783,6 +3860,13 @@ namespace dxvk {
      && Vector4fCount >= 4 && pConstantData != nullptr) {
       std::memcpy(stVP, pConstantData, 16 * sizeof(float));
       stHaveVP = true;
+    }
+
+    // M3.2: capture the per-draw LocalToWorld (c6, exactly 4 registers).
+    if (stArmed && !stInDup && StartRegister == 6
+     && Vector4fCount == 4 && pConstantData != nullptr) {
+      std::memcpy(stC6, pConstantData, 16 * sizeof(float));
+      stHaveC6 = true;
     }
 
     return SetShaderConstants<
