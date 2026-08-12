@@ -85,6 +85,27 @@ namespace dxvk {
   static bool  stHaveVP = false;
   static bool  stInDup  = false;
 
+  // M3.1: per-frame spliced-draw count, exported so the VR proxy (the d3d9
+  // shim that chain-loads this dll) can tell stereo frames from flat ones
+  // (menus, loading screens, videos) and present those mono. Updated at
+  // Present with the finished frame's count.
+  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_splices = 0;
+  static uint32_t stSpliceAccum = 0;
+
+  // M3.1: water/mirror reflection passes upload a VP whose upper 3x3 has a
+  // negative determinant. Splicing those warps the reflection, so skip.
+  static inline float StDet3(const float* m) {
+    return m[0] * (m[5] * m[10] - m[6] * m[9])
+         - m[1] * (m[4] * m[10] - m[6] * m[8])
+         + m[2] * (m[4] * m[9]  - m[5] * m[8]);
+  }
+
+  // M3.1: UI-path instrumentation. UE3's Canvas/Scaleform UI goes through the
+  // *UP draw paths, which M2 did not cover. When the framemap marker is
+  // present, log the first batch of UP draws with enough context (RT size,
+  // viewport, vertex stride) to design the per-eye UI duplication.
+  static int32_t fmUpLogged = 0;
+
   D3D9DeviceEx::D3D9DeviceEx(
           D3D9InterfaceEx*       pParent,
           D3D9Adapter*           pAdapter,
@@ -3170,7 +3191,7 @@ namespace dxvk {
       float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
       const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
       const D3DVIEWPORT9 savedVp = m_state.viewport;
-      if (fw > 0.5f && stRt != nullptr
+      if (fw > 0.5f && StDet3(stVP) > 0.0f && stRt != nullptr
        && stRt->Desc()->Width  == savedVp.Width
        && stRt->Desc()->Height == savedVp.Height
        && savedVp.X == 0 && savedVp.Y == 0
@@ -3192,6 +3213,7 @@ namespace dxvk {
           DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
             MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
         }
+        stSpliceAccum += 1;
         SetVertexShaderConstantF(0, stVP, 4);
         SetViewport(&savedVp);
         stInDup = false;
@@ -3263,6 +3285,19 @@ namespace dxvk {
     if (unlikely(!PrimitiveCount))
       return D3D_OK;
 
+    if (fmArmed && fmUpLogged < 300 && pVertexStreamZeroData != nullptr) {
+      fmUpLogged += 1;
+      const D3D9CommonTexture* upRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const float* v0 = static_cast<const float*>(pVertexStreamZeroData);
+      Logger::info(str::format("FM up DP prim=", (int32_t)PrimitiveType,
+        " n=", PrimitiveCount, " stride=", VertexStreamZeroStride,
+        " posT=", m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT) ? 1 : 0,
+        " rt=", upRt ? (int32_t)upRt->Desc()->Width : -1, "x",
+                upRt ? (int32_t)upRt->Desc()->Height : -1,
+        " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
+        " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
+    }
+
     PrepareDraw(PrimitiveType, false, false);
 
     uint32_t vertexCount = GetVertexCount(PrimitiveType, PrimitiveCount);
@@ -3316,6 +3351,20 @@ namespace dxvk {
 
     if (unlikely(!PrimitiveCount || !NumVertices))
       return D3D_OK;
+
+    if (fmArmed && fmUpLogged < 300 && pVertexStreamZeroData != nullptr) {
+      fmUpLogged += 1;
+      const D3D9CommonTexture* upRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+      const float* v0 = static_cast<const float*>(pVertexStreamZeroData);
+      Logger::info(str::format("FM up DIP prim=", (int32_t)PrimitiveType,
+        " n=", PrimitiveCount, " nv=", NumVertices,
+        " stride=", VertexStreamZeroStride,
+        " posT=", m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT) ? 1 : 0,
+        " rt=", upRt ? (int32_t)upRt->Desc()->Width : -1, "x",
+                upRt ? (int32_t)upRt->Desc()->Height : -1,
+        " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
+        " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
+    }
 
     PrepareDraw(PrimitiveType, false, false);
 
@@ -4368,6 +4417,10 @@ namespace dxvk {
           HWND hDestWindowOverride,
     const RGNDATA* pDirtyRegion,
           DWORD dwFlags) {
+
+    // M3.1: publish the finished frame's spliced-draw count for the proxy.
+    dxvk_vr_splices = stSpliceAccum;
+    stSpliceAccum = 0;
 
     if (fmArmed) {
       if (fmActive)
