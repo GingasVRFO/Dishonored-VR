@@ -1,4 +1,4 @@
-# DXVK
+# Dishonored VR
 
 A Vulkan-based translation layer for Direct3D 8/9/10/11 which allows running 3D applications on Linux using Wine.
 
