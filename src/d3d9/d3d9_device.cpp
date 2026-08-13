@@ -66,8 +66,12 @@ namespace dxvk {
   // s*w term is the frustum shear; zero parallax lands at distance w = conv
   // (world units). Depth pre-pass draws qualify too (same gate), so EQUAL
   // depth tests in the base pass stay consistent per eye.
-  static float stSep  = 0.015f;
-  static float stConv = 60.0f;
+  // M3.7: separation/convergence are exported, live-writable state. The
+  // marker file provides the initial values; the VR proxy overwrites
+  // dxvk_vr_sep each frame from real IPD x world scale x live projection,
+  // so stereo depth and positional parallax share one coherent scale.
+  extern "C" __declspec(dllexport) volatile float dxvk_vr_sep  = 0.015f;
+  extern "C" __declspec(dllexport) volatile float dxvk_vr_conv = 60.0f;
   static bool  stArmed = [] {
     std::FILE* f = std::fopen("dxvk_stereo.txt", "r");
     if (!f) return false;
@@ -76,9 +80,9 @@ namespace dxvk {
     buf[got] = '\0';
     std::fclose(f);
     if (const char* s = std::strstr(buf, "sep="))
-      stSep = std::strtof(s + 4, nullptr);
+      dxvk_vr_sep = std::strtof(s + 4, nullptr);
     if (const char* c = std::strstr(buf, "conv="))
-      stConv = std::strtof(c + 5, nullptr);
+      dxvk_vr_conv = std::strtof(c + 5, nullptr);
     return true;
   }();
   static float stVP[16] = {};
@@ -3226,13 +3230,15 @@ namespace dxvk {
         D3DVIEWPORT9 half = savedVp;
         half.Width = savedVp.Width / 2;
         float eye[16];
+        const float stSepNow  = dxvk_vr_sep;   // sample once per draw
+        const float stConvNow = dxvk_vr_conv;
         for (uint32_t e = 0; e < 2; e++) {
-          float s = e == 0 ? -stSep : stSep;
+          float s = e == 0 ? -stSepNow : stSepNow;
           std::memcpy(eye, stVP, sizeof(eye));
           eye[0]  += s * eye[3];
           eye[4]  += s * eye[7];
           eye[8]  += s * eye[11];
-          eye[12] += s * eye[15] - s * stConv;
+          eye[12] += s * eye[15] - s * stConvNow;
           half.X = e == 0 ? 0 : savedVp.Width - half.Width;
           SetViewport(&half);
           SetVertexShaderConstantF(0, eye, 4);
