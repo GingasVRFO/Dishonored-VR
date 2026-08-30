@@ -9,7 +9,7 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 
 ## Features
 - Full stereo rendering at 4032×2268 (2016×2268 per eye), 6DOF head
-  tracking with lean/peek, seated-friendly
+  tracking with lean/peek, Roomscale, seated-friendly
 - Motion controls: both hands on Arkane's own animation rig, calibrated
   once, with per-stance trims — sword swings, blocking, the power wheel
 - **Blink aims with your controller**, with a distance-by-hand-pitch mode
