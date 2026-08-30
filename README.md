@@ -84,7 +84,7 @@ You can adjust your hand location by pressing F10 then calibrate hands, then use
 - Patreon - https://www.patreon.com/c/GingasVR
 - Youtube - https://www.youtube.com/@gingasvr
 - TikTok - https://www.tiktok.com/@gingasvr?lang=en
--nInstagram - https://www.instagram.com/gingasvr/?hl=en
+- Instagram - https://www.instagram.com/gingasvr/?hl=en
 - Twitter - https://x.com/gingasvr
 - My Nexus Page - https://www.nexusmods.com/profile/GingasVR/mods
 
