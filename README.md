@@ -104,8 +104,8 @@ are M8.3 (superseded  patch 51 reverts it) and M8.4 (not in the shipped
 build) see the release notes before building past patch 49.
 
 ## Credits
-- Arkane Studios / Bethesda — Dishonored
-- [DXVK](https://github.com/doitsujin/dxvk) (zlib license) — the D3D9
+- Arkane Studios / Bethesda - Dishonored
+- [DXVK](https://github.com/doitsujin/dxvk) (zlib license) - the D3D9
   translation layer this project forks
 - Dear ImGui (MIT), OpenVR SDK (BSD-3), OpenXR SDK (Apache-2.0)
 
