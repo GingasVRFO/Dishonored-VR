@@ -24,7 +24,7 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 - In-headset settings overlay (F10)
 
 ## Requirements
-- Dishonored on Steam 
+- Dishonored on Steam (gog or other platforms not supported at this time)
 - A VR headset: SteamVR-native (Vive/Index/etc.), or Quest with Virtual
   Desktop
 - A GPU comfortable rendering ~4K flat Dishonored (developed on an
