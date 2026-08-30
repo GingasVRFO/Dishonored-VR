@@ -54,11 +54,11 @@ the overlay — go to **Hands** and press **CALIBRATE HANDS** once. Turn
 off Motion Blur in the game's video options.
 
 ## Known issues (alpha)
-- Some dynamic lights render per-eye inconsistently (e.g. pub lamps)
-- Fast-swinging thin objects (hanging chains) can shimmer between eyes
+- Some dynamic lights render per-eye inconsistently 
+- Some Fast-swinging thin objects (hanging chains) can shimmer between eyes
 - A few vents refuse crouch entry — slide in (sprint, then crouch)
 - Possession / Devouring Swarm / Windblast aim with the head (Blink is
-  hand-aimed)
+  hand-aimed) - Will eventually work with Hand.
 - Cutscene cameras are fixed (no head-look during cinematics)
 
 ## Building from source
