@@ -1,5 +1,5 @@
 From cd639ce9ae263128810836fe84ba268ba52312c7 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Thu, 13 Aug 2026 00:19:16 +0000
 Subject: [PATCH 09/52] M3.7: live-writable stereo separation/convergence
  exports
@@ -9,8 +9,6 @@ file still arms and seeds them, and the proxy drives sep each frame
 from real IPD x world scale x live projection so stereo depth and
 positional parallax share one coherent world scale.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 18 ++++++++++++------
  1 file changed, 12 insertions(+), 6 deletions(-)

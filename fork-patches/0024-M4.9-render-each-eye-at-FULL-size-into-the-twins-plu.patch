@@ -1,5 +1,5 @@
 From 9ae7e919d6bfca016c7c0d178160da7beb87622f Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Fri, 21 Aug 2026 00:05:32 +0000
 Subject: [PATCH 24/52] M4.9: render each eye at FULL size into the twins, plus
  a desktop preview

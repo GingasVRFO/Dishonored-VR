@@ -1,5 +1,5 @@
 From f1e6906f7d645be381f3870c43c0d2b8e81b33d6 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Thu, 27 Aug 2026 20:37:00 +0000
 Subject: [PATCH 48/52] M8.1: splice the det<0 quarter-res light pass per-eye
  within its region
@@ -12,8 +12,6 @@ All class members split (lights must depth-test per-eye depth). Marker
 tokens: lightsplit=0 reverts, lightswap=1 swaps eye halves (det<0 X-mirror
 insurance).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
 ---
  src/d3d9/d3d9_device.cpp | 115 +++++++++++++++++++++++++++++++++++++++
  1 file changed, 115 insertions(+)

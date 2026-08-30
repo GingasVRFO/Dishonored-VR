@@ -1,5 +1,5 @@
 From b12f924f3efd1e0098342dc6ecb8b648b9de9af3 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Sat, 15 Aug 2026 07:58:47 +0000
 Subject: [PATCH 12/52] M3.10: splice world-space UP effects - the fire fix
 
@@ -19,8 +19,6 @@ width). Scene blits, bloom, tonemap and HUD are all zen=0/zf=ALWAYS and
 are untouched, as are the 234 opaque stride-12 boxes per frame that look
 like occlusion-query volumes (ab=0). 16 draws change behaviour.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
 ---
  src/d3d9/d3d9_device.cpp | 90 +++++++++++++++++++++++++++++++++++++---
  1 file changed, 84 insertions(+), 6 deletions(-)

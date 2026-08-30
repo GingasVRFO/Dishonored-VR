@@ -1,5 +1,5 @@
 From 3f88c5746a1dfc7f03442ea3c27aafc8770afcb3 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 00:58:26 +0000
 Subject: [PATCH 02/52] M3: stereo splice v1 (marker-armed per-eye draw replay)
 
@@ -7,8 +7,6 @@ Replays qualifying scene draws into left/right half viewports with a
 per-eye clip-space shifted ViewProjection (sheared-frustum stereo on the
 camera-relative c0-c3 matrix). Armed by dxvk_stereo.txt (sep=/conv=).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 88 ++++++++++++++++++++++++++++++++++++++++
  1 file changed, 88 insertions(+)

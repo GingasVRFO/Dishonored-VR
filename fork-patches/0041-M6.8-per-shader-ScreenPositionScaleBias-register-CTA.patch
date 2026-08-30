@@ -1,5 +1,5 @@
 From 0e58c6b97e4b6fe9bf2eeeb790f300af61623c5a Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Thu, 27 Aug 2026 02:39:22 +0000
 Subject: [PATCH 41/52] M6.8: per-shader ScreenPositionScaleBias register
  (CTAB) for the uv remap - fixes additive light passes sampling the

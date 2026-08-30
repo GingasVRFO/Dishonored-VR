@@ -1,5 +1,5 @@
 From aece7f6ee6de759f68d10bf744af74c15e47d346 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Tue, 25 Aug 2026 00:00:43 +0000
 Subject: [PATCH 30/52] M6.0: wrist HUD - redirect UI (kUpDup) draws to an
  exported HUD texture

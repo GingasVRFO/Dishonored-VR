@@ -1,5 +1,5 @@
 From fce161a04ef659b6485245fb94a020f5e32209c9 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 07:23:15 +0000
 Subject: [PATCH 04/52] M3.2: world-quad splice via c6 identity test, UI
  both-eyes duplication
@@ -12,8 +12,6 @@ Subject: [PATCH 04/52] M3.2: world-quad splice via c6 identity test, UI
   screen depth. Counts toward dxvk_vr_splices so the proxy presents these
   frames stereo.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 92 ++++++++++++++++++++++++++++++++++++++--
  1 file changed, 88 insertions(+), 4 deletions(-)

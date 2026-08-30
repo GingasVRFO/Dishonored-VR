@@ -1,5 +1,5 @@
 From 031d21965d19d88fbea97a22fceb39f9949bf3c5 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 09:28:34 +0000
 Subject: [PATCH 05/52] M3.3: depth-test state replaces c6 heuristic for
  splice/UI gating
@@ -10,8 +10,6 @@ frames when post quads carried a stale non-identity c6 (scene copies got
 spliced and compounded through the post chain). UI duplication likewise
 now requires depth-test OFF so in-scene UP sprites are not plain-duped.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 56 +++++++++++++++++-----------------------
  1 file changed, 24 insertions(+), 32 deletions(-)

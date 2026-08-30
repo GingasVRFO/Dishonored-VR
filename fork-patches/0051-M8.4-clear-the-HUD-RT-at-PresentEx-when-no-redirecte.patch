@@ -1,5 +1,5 @@
 From b2901b7949c0fca863ef288d766f8cee8d0c2375 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Sun, 30 Aug 2026 03:27:58 +0000
 Subject: [PATCH 51/52] M8.4: clear the HUD RT at PresentEx when no redirected
  draw arrived - stale wrist pixels (carry icon, load junk)

@@ -1,5 +1,5 @@
 From fb210b04657526ef78923bb101e2ed697a5ce6f5 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 09:49:23 +0000
 Subject: [PATCH 06/52] M3.4: revert to proven M3.1 draw behavior; instrument
  depth state
@@ -10,8 +10,6 @@ splice only. Armed dumps now record zen/zf/zw/ab and whether tex0 is a
 render target on every draw, so the world-quad and UI discriminators can
 be designed from ground truth instead of guessed.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 108 +++++++++++++--------------------------
  1 file changed, 35 insertions(+), 73 deletions(-)

@@ -1,5 +1,5 @@
 From a541b8b38cab8a801571483b54fefacfdb91623c Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 10:01:18 +0000
 Subject: [PATCH 07/52] M3.5: measured gates - splice depth-tested small quads,
  dup non-RT UP draws
@@ -11,8 +11,6 @@ draws split 208 UI (tex0 not an RT) vs 80 scene blits (tex0 = full-size
 RT); the blits were the M3.2/M3.3 shredder. UI dup now gated on tex0
 not being a render target.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 81 ++++++++++++++++++++++++++++++++++------
  1 file changed, 70 insertions(+), 11 deletions(-)

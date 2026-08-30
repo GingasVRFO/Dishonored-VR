@@ -1,5 +1,5 @@
 From 63e6fefb39bfb2b4d5aaeb035140ed397633cd63 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 06:54:52 +0000
 Subject: [PATCH 03/52] M3.1: splice-count export, mirrored-VP skip, UP-path
  instrumentation
@@ -10,8 +10,6 @@ Subject: [PATCH 03/52] M3.1: splice-count export, mirrored-VP skip, UP-path
 - marker-armed logging of Draw*UP calls (UE3 Canvas/Scaleform UI path)
   with PositionT flag, stride, RT/viewport and first vertex
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 55 +++++++++++++++++++++++++++++++++++++++-
  1 file changed, 54 insertions(+), 1 deletion(-)

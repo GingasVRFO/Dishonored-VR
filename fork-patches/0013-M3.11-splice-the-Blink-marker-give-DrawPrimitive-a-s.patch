@@ -1,5 +1,5 @@
 From 471818925037d3b0bce8de2e965c6774975906da Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Sat, 15 Aug 2026 23:55:15 +0000
 Subject: [PATCH 13/52] M3.11: splice the Blink marker; give DrawPrimitive a
  splice at all
@@ -25,8 +25,6 @@ Being centred in the view, a mono copy lands exactly on the SBS seam and
 is invisible to both eyes - which is why the marker showed at the edges
 and when looking down but never straight ahead.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
 ---
  src/d3d9/d3d9_device.cpp | 84 ++++++++++++++++++++++++++++++++++++++--
  1 file changed, 81 insertions(+), 3 deletions(-)

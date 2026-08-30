@@ -1,5 +1,5 @@
 From 7264675f6ecca4bf67bb522c09354abe3fd1b362 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Thu, 27 Aug 2026 20:22:49 +0000
 Subject: [PATCH 47/52] M8.0: VPM shear gated to additive draws only + vpm reg
  bounds guard
@@ -11,8 +11,6 @@ The measured artifact class is additive (killmask: ab=1 dst=ONE), so the
 shear now applies there and nowhere else. The combat crash class is closed
 by refusing vrVpmReg > 220 (4-row matrix off the end of the constant file).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
 ---
  src/d3d9/d3d9_device.cpp | 28 +++++++++++++++++++++++++---
  1 file changed, 25 insertions(+), 3 deletions(-)

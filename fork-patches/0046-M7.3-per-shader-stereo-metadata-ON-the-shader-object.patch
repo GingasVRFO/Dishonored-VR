@@ -1,5 +1,5 @@
 From 18b54fcb2975ed341edb7e3fefa3dab411e8762a Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Thu, 27 Aug 2026 05:02:36 +0000
 Subject: [PATCH 46/52] M7.3: per-shader stereo metadata ON the shader object -
  kills the overflowing ptr->info maps that silently disabled every light-pass

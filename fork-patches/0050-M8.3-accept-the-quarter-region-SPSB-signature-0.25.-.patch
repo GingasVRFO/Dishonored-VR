@@ -1,5 +1,5 @@
 From 268e6a1997f498cbaf0ee1a0467bfc7d814c36d1 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Sun, 30 Aug 2026 03:19:11 +0000
 Subject: [PATCH 50/52] M8.3: accept the quarter-region SPSB signature
  [0.25...] and make the per-eye uv remap generic - main-view additive lights

@@ -1,5 +1,5 @@
 From f0ed1b5aadc432c54807c0444cb08859ea89c0e5 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Sat, 15 Aug 2026 07:39:16 +0000
 Subject: [PATCH 10/52] M3.8: on-demand frame dump + per-draw splice verdict
 
@@ -14,8 +14,6 @@ SPLICE) which is both logged and acted on, so the log cannot disagree
 with the behaviour. Also logs RT size+format, viewport, blend factors,
 fw and det - the inputs to every one of those conditions.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
 ---
  src/d3d9/d3d9_device.cpp | 115 +++++++++++++++++++++++++++------------
  1 file changed, 81 insertions(+), 34 deletions(-)

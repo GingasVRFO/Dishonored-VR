@@ -1,5 +1,5 @@
 From 33565bdf2ce8380859c540cce051b59623d2ebfd Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Mon, 24 Aug 2026 05:21:25 +0000
 Subject: [PATCH 33/52] M5.7: splice the shadow frustum in the UP path where it
  actually draws

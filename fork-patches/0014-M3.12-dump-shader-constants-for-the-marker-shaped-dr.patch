@@ -1,5 +1,5 @@
 From 96cd38db62c5a96316af3c41111ee795bde24456 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Sun, 16 Aug 2026 23:59:09 +0000
 Subject: [PATCH 14/52] M3.12: dump shader constants for the marker-shaped draw
 
@@ -13,8 +13,6 @@ splice it or not.
 Logs every non-zero vs c0-c127 and ps c0-c31 for a depth-tested,
 unblended, 2-triangle quad that samples a full-size render target.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
 ---
  src/d3d9/d3d9_device.cpp | 32 ++++++++++++++++++++++++++++++++
  1 file changed, 32 insertions(+)

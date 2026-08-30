@@ -1,5 +1,5 @@
 From b8a8173d632dddaf83545ea353b19d7b04267e99 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Tue, 25 Aug 2026 21:49:15 +0000
 Subject: [PATCH 37/52] M6.4: shadow MASK passes (zen=1 zwrite=0 alpha-off
  volume geometry) join the world splice - measured pair mechanism

@@ -1,5 +1,5 @@
 From b0cfd9742ac5d451a16a696d5065545ab62fac43 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
+From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
 Date: Wed, 12 Aug 2026 11:03:26 +0000
 Subject: [PATCH 08/52] M3.6: export live projection scales for FOV-true
  presentation
@@ -10,8 +10,6 @@ sized RT. The proxy sizes its presentation quads from the FOV the game
 actually renders each frame - cutscene FOV changes present at true 1:1
 angles and FOV misconfiguration can no longer cause angular stretch.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
 ---
  src/d3d9/d3d9_device.cpp | 23 +++++++++++++++++++++++
  1 file changed, 23 insertions(+)
