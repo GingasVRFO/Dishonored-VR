@@ -2,7 +2,7 @@
 
 A from-scratch VR conversion of **Dishonored (2012)** — true stereo
 rendering, 6DOF head tracking, motion controls, roomscale, and a
-hand-aimed Blink — built as a `d3d9.dll` proxy plus a forked version of DXVK.
+hand-aimed Blink — built as a `d3d9.dll` proxy using a forked version of DXVK.
 
 Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 (OpenXR)** The mod picks the backend automatically.
