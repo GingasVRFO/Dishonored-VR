@@ -1,7 +1,4 @@
-From 749c5cd7fe91e280829bb5968f3d308afe31f988 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 02:10:22 +0000
-Subject: [PATCH 39/52] M6.6: dxvk_vr_reflect kill-switch for the
+M6.6: dxvk_vr_reflect kill-switch for the
  mirrored-camera planar reflection pass
 
 ---

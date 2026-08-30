@@ -1,7 +1,4 @@
-From 10ec3724414b301dcfe93e82c49397702c13bd40 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 04:18:01 +0000
-Subject: [PATCH 44/52] M7.1: reflect=0 also clears the reflection region per
+M7.1: reflect=0 also clears the reflection region per
  frame - the stale-RT confound hid the first test
 
 ---

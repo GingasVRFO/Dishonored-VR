@@ -1,7 +1,4 @@
-From a02675577cff62ed603474f09b3027f1ccbad589 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Sun, 30 Aug 2026 03:07:02 +0000
-Subject: [PATCH 49/52] M8.2: det>0 quarter-region pass joins the M8.1 splice
+M8.2: det>0 quarter-region pass joins the M8.1 splice
  (vp!=rt exact-quarter guard) - the pub floor pool
 
 ---

@@ -1,7 +1,4 @@
-From 63e6fefb39bfb2b4d5aaeb035140ed397633cd63 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 06:54:52 +0000
-Subject: [PATCH 03/52] M3.1: splice-count export, mirrored-VP skip, UP-path
+M3.1: splice-count export, mirrored-VP skip, UP-path
  instrumentation
 
 - dxvk_vr_splices: per-frame spliced-draw count exported for the VR proxy

@@ -1,7 +1,4 @@
-From e8df12c065e4da661e23a4d628ce8d9feaa0b970 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Mon, 24 Aug 2026 05:15:17 +0000
-Subject: [PATCH 32/52] M5.6: per-eye modulated-shadow projection, derived from
+M5.6: per-eye modulated-shadow projection, derived from
  the census
 
 ps 1923f537 rebuilds world position from depth-scaled screen coords via

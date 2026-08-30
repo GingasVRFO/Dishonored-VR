@@ -1,7 +1,4 @@
-From 4f5743c8a30d359b64271df3ef07d8fbd096ca80 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 20 Aug 2026 23:47:48 +0000
-Subject: [PATCH 22/52] M4.7: twin the depth buffers too
+M4.7: twin the depth buffers too
 
 The two eyes see the same geometry from different positions, so they do not
 agree about what is in front of what. Sharing one depth buffer would occlusion-

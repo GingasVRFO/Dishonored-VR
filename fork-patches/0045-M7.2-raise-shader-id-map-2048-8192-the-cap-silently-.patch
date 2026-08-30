@@ -1,7 +1,4 @@
-From cb23f13bb4bd1352e127281c915eb8429095e7a0 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 04:44:37 +0000
-Subject: [PATCH 45/52] M7.2: raise shader id map 2048->8192 - the cap silently
+M7.2: raise shader id map 2048->8192 - the cap silently
  disabled M6.8/M7.0 for late-created shaders (ps=00000000 in captures was the
  tell)
 

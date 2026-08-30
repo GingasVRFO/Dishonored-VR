@@ -1,7 +1,4 @@
-From f1e6906f7d645be381f3870c43c0d2b8e81b33d6 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 20:37:00 +0000
-Subject: [PATCH 48/52] M8.1: splice the det<0 quarter-res light pass per-eye
+M8.1: splice the det<0 quarter-res light pass per-eye
  within its region
 
 The 2026-08-28 framedump names it: the additive light shaders draw INSIDE

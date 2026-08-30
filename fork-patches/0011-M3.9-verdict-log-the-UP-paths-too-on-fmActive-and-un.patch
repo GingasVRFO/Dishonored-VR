@@ -1,7 +1,4 @@
-From 2793518889a2426912c77ec0acc27e4b31792fe7 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 07:47:54 +0000
-Subject: [PATCH 11/52] M3.9: verdict-log the UP paths too, on fmActive and
+M3.9: verdict-log the UP paths too, on fmActive and
  uncapped
 
 The first on-demand dump showed 870 spliced DIP draws, 1740 in-dup

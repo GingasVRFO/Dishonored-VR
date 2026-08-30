@@ -1,7 +1,4 @@
-From fdd7c6c2e6075ec19d9d58bbd5cef4b674ebe1f3 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Tue, 25 Aug 2026 21:56:48 +0000
-Subject: [PATCH 38/52] M6.5: shadowfix isolation modes (1..4) + uv-remap
+M6.5: shadowfix isolation modes (1..4) + uv-remap
  evidence log + shadow VS bytecode capture
 
 ---

@@ -89,8 +89,9 @@ has the exact invocation.
 **The DXVK fork (`dxvk_d3d9.dll`)** — DXVK v3.0.2 at commit `3a4c6fa3`
 plus the patch series in `fork-patches/` (52 patches: the stereo splicer,
 per-eye light/shadow work, the wrist-HUD redirect, and the frame-dump
-diagnostics). Apply with `git am`, build DXVK's 32-bit d3d9 target per
-DXVK's own docs (meson + MinGW), rename the output to `dxvk_d3d9.dll`.
+diagnostics). Apply them in order with `git apply fork-patches/*.patch`,
+build DXVK's 32-bit d3d9 target per DXVK's own docs (meson + MinGW),
+rename the output to `dxvk_d3d9.dll`.
 The shipped release uses the state after patch 49 (M8.2); patches 50–52
 are M8.3 (superseded — patch 51 reverts it) and M8.4 (not in the shipped
 build) — see the release notes before building past patch 49.

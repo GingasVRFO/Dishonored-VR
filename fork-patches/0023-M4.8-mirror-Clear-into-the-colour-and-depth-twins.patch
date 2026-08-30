@@ -1,7 +1,4 @@
-From 1e00eb736e733fa29aa899680314ab64b867258b Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 20 Aug 2026 23:54:46 +0000
-Subject: [PATCH 23/52] M4.8: mirror Clear into the colour and depth twins
+M4.8: mirror Clear into the colour and depth twins
 
 A twin that is never cleared holds last frame's contents, and the second eye
 would be composited over that garbage. This lands BEFORE anything renders into

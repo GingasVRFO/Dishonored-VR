@@ -1,7 +1,4 @@
-From 7264675f6ecca4bf67bb522c09354abe3fd1b362 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 20:22:49 +0000
-Subject: [PATCH 47/52] M8.0: VPM shear gated to additive draws only + vpm reg
+M8.0: VPM shear gated to additive draws only + vpm reg
  bounds guard
 
 M7.3 made the shear engage on EVERY shader carrying ViewProjectionMatrix

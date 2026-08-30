@@ -1,7 +1,4 @@
-From 352ed8ab1dfdf60f9020d464cff72e9cfde77598 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 04:03:23 +0000
-Subject: [PATCH 43/52] M7.0: shear the PS ViewProjectionMatrix per eye - the
+M7.0: shear the PS ViewProjectionMatrix per eye - the
  light passes re-project world pos in the PIXEL shader for their attenuation
  uv (measured in ps_bb3e655b disassembly)
 

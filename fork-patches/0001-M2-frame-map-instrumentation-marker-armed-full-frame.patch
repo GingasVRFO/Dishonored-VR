@@ -1,7 +1,4 @@
-From 14190ab1cefca8a1117694e4cc64da9f13fcea61 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 00:36:05 +0000
-Subject: [PATCH 01/52] M2: frame-map instrumentation (marker-armed full-frame
+M2: frame-map instrumentation (marker-armed full-frame
  dumps)
 
 ---

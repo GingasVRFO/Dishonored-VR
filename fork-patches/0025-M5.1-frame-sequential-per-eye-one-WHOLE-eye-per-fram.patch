@@ -1,7 +1,4 @@
-From 11110cd29050428be0021120879c0b912e19c881 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Fri, 21 Aug 2026 00:48:32 +0000
-Subject: [PATCH 25/52] M5.1: frame-sequential per-eye - one WHOLE eye per
+M5.1: frame-sequential per-eye - one WHOLE eye per
  frame, full resolution
 
 seq=1 in dxvk_stereo.txt. A qualifying draw is drawn ONCE at the app's

@@ -1,7 +1,4 @@
-From 2a3dfe2a884aafd499717eaed6c2f96b27198209 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Mon, 24 Aug 2026 04:39:07 +0000
-Subject: [PATCH 27/52] M5.3: light shafts spliced per eye, against NAMED
+M5.3: light shafts spliced per eye, against NAMED
  registers
 
 The captured shaders kept their CTAB constant tables: the god-ray chain

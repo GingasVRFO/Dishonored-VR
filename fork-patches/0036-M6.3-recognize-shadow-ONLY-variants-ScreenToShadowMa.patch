@@ -1,7 +1,4 @@
-From 9eb50b907da259d4a5b96342acd0c726f27f1351 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Tue, 25 Aug 2026 21:36:15 +0000
-Subject: [PATCH 36/52] M6.3: recognize shadow-ONLY variants
+M6.3: recognize shadow-ONLY variants
  (ScreenToShadowMatrix without ScreenToWorld) - the pub light volumes
 
 ---

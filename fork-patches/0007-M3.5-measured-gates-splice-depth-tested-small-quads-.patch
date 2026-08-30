@@ -1,7 +1,4 @@
-From a541b8b38cab8a801571483b54fefacfdb91623c Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 10:01:18 +0000
-Subject: [PATCH 07/52] M3.5: measured gates - splice depth-tested small quads,
+M3.5: measured gates - splice depth-tested small quads,
  dup non-RT UP draws
 
 Framemap run 3 ground truth: all escaped-mono small draws are world

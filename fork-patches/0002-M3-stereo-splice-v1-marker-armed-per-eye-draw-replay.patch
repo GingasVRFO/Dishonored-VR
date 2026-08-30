@@ -1,7 +1,4 @@
-From 3f88c5746a1dfc7f03442ea3c27aafc8770afcb3 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 00:58:26 +0000
-Subject: [PATCH 02/52] M3: stereo splice v1 (marker-armed per-eye draw replay)
+M3: stereo splice v1 (marker-armed per-eye draw replay)
 
 Replays qualifying scene draws into left/right half viewports with a
 per-eye clip-space shifted ViewProjection (sheared-frustum stereo on the

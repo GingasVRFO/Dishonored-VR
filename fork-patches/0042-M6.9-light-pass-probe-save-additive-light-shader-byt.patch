@@ -1,7 +1,4 @@
-From 29838b69e9035ffab27e63fd0c782373aa56b780 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 03:47:51 +0000
-Subject: [PATCH 42/52] M6.9: light-pass probe - save additive light shader
+M6.9: light-pass probe - save additive light shader
  bytecode at the draw
 
 ---

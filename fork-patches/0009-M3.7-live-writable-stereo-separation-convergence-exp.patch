@@ -1,7 +1,4 @@
-From cd639ce9ae263128810836fe84ba268ba52312c7 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 13 Aug 2026 00:19:16 +0000
-Subject: [PATCH 09/52] M3.7: live-writable stereo separation/convergence
+M3.7: live-writable stereo separation/convergence
  exports
 
 dxvk_vr_sep/dxvk_vr_conv replace the load-time constants; the marker

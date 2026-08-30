@@ -1,7 +1,4 @@
-From b0cfd9742ac5d451a16a696d5065545ab62fac43 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 11:03:26 +0000
-Subject: [PATCH 08/52] M3.6: export live projection scales for FOV-true
+M3.6: export live projection scales for FOV-true
  presentation
 
 dxvk_vr_proj[2] publishes the main camera's xs/ys (clip-column norms),

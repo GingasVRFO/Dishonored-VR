@@ -1,7 +1,4 @@
-From 471818925037d3b0bce8de2e965c6774975906da Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 23:55:15 +0000
-Subject: [PATCH 13/52] M3.11: splice the Blink marker; give DrawPrimitive a
+M3.11: splice the Blink marker; give DrawPrimitive a
  splice at all
 
 Two escapes appeared only in a frame captured with the Blink marker on

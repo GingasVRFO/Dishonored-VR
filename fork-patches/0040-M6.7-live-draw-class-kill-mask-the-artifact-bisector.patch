@@ -1,7 +1,4 @@
-From d49c5fdbda7c122f9665ab76103c0f63b57d5f2c Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 27 Aug 2026 02:28:16 +0000
-Subject: [PATCH 40/52] M6.7: live draw-class kill mask - the artifact bisector
+M6.7: live draw-class kill mask - the artifact bisector
 
 ---
  src/d3d9/d3d9_device.cpp | 69 ++++++++++++++++++++++++++++++++++++++++

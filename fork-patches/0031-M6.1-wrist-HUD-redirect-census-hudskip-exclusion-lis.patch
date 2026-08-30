@@ -1,7 +1,4 @@
-From 3415ebd9ab7d19f1e8a9f3d83a4ba88e6990ba70 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Tue, 25 Aug 2026 00:25:34 +0000
-Subject: [PATCH 31/52] M6.1: wrist-HUD redirect census + hudskip exclusion
+M6.1: wrist-HUD redirect census + hudskip exclusion
  list
 
 ---

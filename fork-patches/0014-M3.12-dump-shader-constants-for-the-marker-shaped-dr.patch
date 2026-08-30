@@ -1,7 +1,4 @@
-From 96cd38db62c5a96316af3c41111ee795bde24456 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Sun, 16 Aug 2026 23:59:09 +0000
-Subject: [PATCH 14/52] M3.12: dump shader constants for the marker-shaped draw
+M3.12: dump shader constants for the marker-shaped draw
 
 Diagnostic only. UE3 feeds screen-space effects a scale/bias float4 that
 assumes the draw covers the whole frame (uv = clip.xy*scale + bias).

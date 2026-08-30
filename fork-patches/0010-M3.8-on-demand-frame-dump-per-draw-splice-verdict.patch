@@ -1,7 +1,4 @@
-From f0ed1b5aadc432c54807c0444cb08859ea89c0e5 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 07:39:16 +0000
-Subject: [PATCH 10/52] M3.8: on-demand frame dump + per-draw splice verdict
+M3.8: on-demand frame dump + per-draw splice verdict
 
 The M2 dump armed at fixed frame numbers (1200/6000/12000), which cannot
 capture 'stand in front of the fire and look at it'. Export a writable

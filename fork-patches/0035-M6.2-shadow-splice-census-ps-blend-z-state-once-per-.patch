@@ -1,7 +1,4 @@
-From 10f4042a86d23574748d4ca72ded60ccf6fc78b7 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Tue, 25 Aug 2026 21:25:43 +0000
-Subject: [PATCH 35/52] M6.2: shadow-splice census (ps + blend/z state, once
+M6.2: shadow-splice census (ps + blend/z state, once
  per launch) on the M5.8 family recognition
 
 ---

@@ -1,7 +1,4 @@
-From b12f924f3efd1e0098342dc6ecb8b648b9de9af3 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 07:58:47 +0000
-Subject: [PATCH 12/52] M3.10: splice world-space UP effects - the fire fix
+M3.10: splice world-space UP effects - the fire fix
 
 Measured, on-demand dump of the fireplace room: 11 UP draws rejected as
 samples-rt with stride=64, zen=1/zf=LESSEQUAL, zw=0, ab=1 and world-space

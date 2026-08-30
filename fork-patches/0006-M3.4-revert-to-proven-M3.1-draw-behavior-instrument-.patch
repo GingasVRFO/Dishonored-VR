@@ -1,7 +1,4 @@
-From fb210b04657526ef78923bb101e2ed697a5ce6f5 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 09:49:23 +0000
-Subject: [PATCH 06/52] M3.4: revert to proven M3.1 draw behavior; instrument
+M3.4: revert to proven M3.1 draw behavior; instrument
  depth state
 
 Small-quad splice (M3.2/M3.3) and UP duplication both misfired on scene

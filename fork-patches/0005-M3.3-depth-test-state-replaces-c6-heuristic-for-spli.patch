@@ -1,7 +1,4 @@
-From 031d21965d19d88fbea97a22fceb39f9949bf3c5 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 09:28:34 +0000
-Subject: [PATCH 05/52] M3.3: depth-test state replaces c6 heuristic for
+M3.3: depth-test state replaces c6 heuristic for
  splice/UI gating
 
 ZENABLE is authoritative: screen-space resolve/post copies never depth-

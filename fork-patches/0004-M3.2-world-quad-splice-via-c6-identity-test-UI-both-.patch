@@ -1,7 +1,4 @@
-From fce161a04ef659b6485245fb94a020f5e32209c9 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Wed, 12 Aug 2026 07:23:15 +0000
-Subject: [PATCH 04/52] M3.2: world-quad splice via c6 identity test, UI
+M3.2: world-quad splice via c6 identity test, UI
  both-eyes duplication
 
 - small draws (<=2 prims) now splice when their LocalToWorld (c6, count==4)

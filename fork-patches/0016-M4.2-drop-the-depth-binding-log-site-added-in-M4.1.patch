@@ -1,7 +1,4 @@
-From 0413f2a13d2a2e77a1db1d4d8606763230a8d394 Mon Sep 17 00:00:00 2001
-From: GingasVR <67027574+GingasVRFO@users.noreply.github.com>
-Date: Thu, 20 Aug 2026 06:58:13 +0000
-Subject: [PATCH 16/52] M4.2: drop the depth-binding log site added in M4.1
+M4.2: drop the depth-binding log site added in M4.1
 
 M4.1 crashed the game on launch. It changed two things at once: render-target
 IDs inside an existing log line, and a new log site inside
