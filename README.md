@@ -24,7 +24,7 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 - In-headset settings overlay (F10)
 
 ## Requirements
-- Dishonored (2012) on Steam — the original, not the Definitive Edition
+- Dishonored on Steam 
 - A VR headset: SteamVR-native (Vive/Index/etc.), or Quest with Virtual
   Desktop
 - A GPU comfortable rendering ~4K flat Dishonored (developed on an
