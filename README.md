@@ -5,7 +5,7 @@ rendering, 6DOF head tracking, motion controls, roomscale, and a
 hand-aimed Blink — built as a `d3d9.dll` proxy plus a forked version of DXVK.
 
 Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
-(OpenXR)** from the same install: the mod picks the backend automatically.
+(OpenXR)** The mod picks the backend automatically.
 
 ## Features
 - Full stereo rendering at 4032×2268 (2016×2268 per eye), 6DOF head
