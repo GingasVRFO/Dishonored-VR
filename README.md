@@ -44,9 +44,10 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 3. **Launch through Steam** — a direct .exe launch crashes at the menu
    (the game needs the Steam context).
 
-**Vive/Index:** SteamVR running, launch through Steam. Done.
-**Quest:** Virtual Desktop streaming, SteamVR NOT running, launch through
-Steam. VD at 72 Hz, SSW Auto. `steam_appid.txt` must be present (it is,
+- **Vive/Index:** SteamVR running, launch through Steam
+
+- **Quest:** Virtual Desktop streaming, SteamVR NOT running, launch through
+Steam. VD at 72 Hz, SSW Off. `steam_appid.txt` must be present (it is,
 in the package).
 
  `F5` recenters and sets your standing height. `F10` opens
