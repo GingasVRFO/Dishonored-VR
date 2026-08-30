@@ -52,6 +52,18 @@ in the package).
  `F5` recenters and sets your standing height. `F10` opens
 the overlay to adjust settings. Turn off Motion Blur in the game's video options.
 
+
+## Controls
+
+Attack with the sword by swinging or use right Trigger
+Crouch by crouching Physically or Press Right A
+Use Blink with right trigger and aim with your left hand
+Use the gun, crossbow etc with left hand trigger and aim with your hand
+Interact with left X or A button (index)
+Weapon wheel (on Index press left trackpad) on quest use left grip, then use joystick
+To get health open the weapon wheel and use B on right hand
+
+
 ## Adjusting Hands
 You can adjust your hand location by pressing F10 then calibrate hands, then use the trim settings at the bottom to place where you want them
 
