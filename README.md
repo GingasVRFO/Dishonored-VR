@@ -1,4 +1,4 @@
-# Dishonored VR
+ # Dishonored VR
 
 A from-scratch VR conversion of **Dishonored (2012)** — true stereo
 rendering, 6DOF head tracking, motion controls, roomscale, and a
@@ -55,13 +55,13 @@ the overlay to adjust settings. Turn off Motion Blur in the game's video options
 
 ## Controls
 
-Attack with the sword by swinging or use right Trigger
-Crouch by crouching Physically or Press Right A
-Use Blink with right trigger and aim with your left hand
-Use the gun, crossbow etc with left hand trigger and aim with your hand
-Interact with left X or A button (index)
-Weapon wheel (on Index press left trackpad) on quest use left grip, then use joystick
-To get health open the weapon wheel and use B on right hand
+- Attack with the sword by swinging or use right Trigger
+- Crouch by crouching Physically or Press Right A
+- Use Blink with right trigger and aim with your left hand
+- Use the gun, crossbow etc with left hand trigger and aim with your hand
+-nInteract with left X or A button (index)
+- Weapon wheel (on Index press left trackpad) on quest use left grip, then use joystick
+- To get health open the weapon wheel and use B on right hand
 
 
 ## Adjusting Hands
