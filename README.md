@@ -57,7 +57,7 @@ the overlay to adjust settings. Turn off Motion Blur in the game's video options
 
 - Attack with the sword by swinging or use right Trigger
 - Crouch by crouching Physically or Press Right A
-- Use Blink with right trigger and aim with your left hand
+- Use Blink with Left trigger and aim with your left hand
 - Use the gun, crossbow etc with left hand trigger and aim with your hand
 -nInteract with left X or A button (index)
 - Weapon wheel (on Index press left trackpad) on quest use left grip, then use joystick
