@@ -52,6 +52,8 @@ Steam. VD at 72 Hz, SSW Off.
  `F5` recenters and sets your standing height. `F10` opens
 the overlay to adjust settings. Turn off Motion Blur in the game's video options.
 
+F10 for Overlay - Use Mouse to control it. No motion control for overlay right now.
+
 
 ## Controls
 
