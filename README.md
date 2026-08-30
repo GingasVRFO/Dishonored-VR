@@ -88,20 +88,20 @@ You can adjust your hand location by pressing F10 then calibrate hands, then use
 ## Building from source
 Two components:
 
-**The proxy (`d3d9.dll`)** — `src/dllmain.cpp`, cross-compiled from Linux
+**The proxy (`d3d9.dll`)** `src/dllmain.cpp`, cross-compiled from Linux
 with MinGW (`i686-w64-mingw32-g++`). Needs the OpenVR SDK headers, the
 OpenXR SDK headers, and Dear ImGui (docking branch works). `src/build.sh`
 has the exact invocation.
 
-**The DXVK fork (`dxvk_d3d9.dll`)** — DXVK v3.0.2 at commit `3a4c6fa3`
+**The DXVK fork (`dxvk_d3d9.dll`)** DXVK v3.0.2 at commit `3a4c6fa3`
 plus the patch series in `fork-patches/` (52 patches: the stereo splicer,
 per-eye light/shadow work, the wrist-HUD redirect, and the frame-dump
 diagnostics). Apply them in order with `git apply fork-patches/*.patch`,
 build DXVK's 32-bit d3d9 target per DXVK's own docs (meson + MinGW),
 rename the output to `dxvk_d3d9.dll`.
 The shipped release uses the state after patch 49 (M8.2); patches 50–52
-are M8.3 (superseded — patch 51 reverts it) and M8.4 (not in the shipped
-build) — see the release notes before building past patch 49.
+are M8.3 (superseded  patch 51 reverts it) and M8.4 (not in the shipped
+build) see the release notes before building past patch 49.
 
 ## Credits
 - Arkane Studios / Bethesda — Dishonored
