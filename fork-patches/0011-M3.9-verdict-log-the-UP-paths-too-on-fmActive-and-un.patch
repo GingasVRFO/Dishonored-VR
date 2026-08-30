@@ -1,0 +1,184 @@
+From 2793518889a2426912c77ec0acc27e4b31792fe7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 15 Aug 2026 07:47:54 +0000
+Subject: [PATCH 11/52] M3.9: verdict-log the UP paths too, on fmActive and
+ uncapped
+
+The first on-demand dump showed 870 spliced DIP draws, 1740 in-dup
+replays and exactly one escape (an 800x800 shadow tile) - yet the frame
+reported 1321 splices. The missing 451 were UP draws: their log was
+gated on fmArmed (the marker FILE, now disarmed) and capped at 300
+lines, so the entire UP path - the only place a mono draw can still
+hide - was invisible to an on-demand dump.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
+---
+ src/d3d9/d3d9_device.cpp | 121 ++++++++++++++++++++++++---------------
+ 1 file changed, 75 insertions(+), 46 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 365860e9..fbc268e2 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3355,24 +3355,50 @@ namespace dxvk {
+     if (unlikely(!PrimitiveCount))
+       return D3D_OK;
+ 
+-    if (fmArmed && fmUpLogged < 300 && pVertexStreamZeroData != nullptr) {
++    // M3.9: same verdict treatment as the indexed path. The M2 UP log was
++    // gated on fmArmed (the marker FILE) and capped at 300 lines, so an
++    // on-demand dump showed ZERO UP draws while the splice counter proved
++    // 451 of them were being duplicated - the un-duplicated ones, the mono
++    // suspects, were invisible. Now: gated on fmActive, uncapped, and it
++    // states which condition excluded the draw.
++    const D3D9CommonTexture* upT0 = GetCommonTexture(m_state.textures[0]);
++    const bool upSamplesRt = upT0 != nullptr
++      && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
++    const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
++    const D3DVIEWPORT9 upSaved = m_state.viewport;
++    static const char* const kUpDup = "DUP";
++    const char* upWhy = kUpDup;
++    if      (!stArmed)         upWhy = "no-stereo";
++    else if (stInDup)          upWhy = "in-dup";
++    else if (ShouldRecord())   upWhy = "recording";
++    else if (upSamplesRt)      upWhy = "samples-rt";
++    else if (upRt2 == nullptr) upWhy = "no-rt";
++    else if (upRt2->Desc()->Width  != upSaved.Width
++          || upRt2->Desc()->Height != upSaved.Height) upWhy = "vp!=rt";
++    else if (upSaved.X != 0 || upSaved.Y != 0) upWhy = "vp-offset";
++    else if (upSaved.Width < 1024)             upWhy = "rt-small";
++    else if (!(upSaved.Width > upSaved.Height)) upWhy = "rt-portrait";
++
++    if (fmActive && pVertexStreamZeroData != nullptr) {
+       fmUpLogged += 1;
+-      const D3D9CommonTexture* upRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+       const float* v0 = static_cast<const float*>(pVertexStreamZeroData);
+-      Logger::info(str::format("FM up DP prim=", (int32_t)PrimitiveType,
++      Logger::info(str::format("FM d", fmDraw++, " upDP prim=", (int32_t)PrimitiveType,
+         " n=", PrimitiveCount, " stride=", VertexStreamZeroStride,
+         " posT=", m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT) ? 1 : 0,
+-        " rt=", upRt ? (int32_t)upRt->Desc()->Width : -1, "x",
+-                upRt ? (int32_t)upRt->Desc()->Height : -1,
+-        " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
+         " zen=", m_state.renderStates[D3DRS_ZENABLE],
+         " zf=", m_state.renderStates[D3DRS_ZFUNC],
+-        " tex0rt=", [this] {
+-          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
+-          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
+-            ? (int32_t)t0->Desc()->Width : 0;
+-        }(),
+-        " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
++        " zw=", m_state.renderStates[D3DRS_ZWRITEENABLE],
++        " ab=", m_state.renderStates[D3DRS_ALPHABLENDENABLE],
++        " sb=", m_state.renderStates[D3DRS_SRCBLEND],
++        " db=", m_state.renderStates[D3DRS_DESTBLEND],
++        " rt=", upRt2 ? (int32_t)upRt2->Desc()->Width : -1, "x",
++                upRt2 ? (int32_t)upRt2->Desc()->Height : -1,
++        " fmt=", upRt2 ? (int32_t)upRt2->Desc()->Format : -1,
++        " vp=", (int32_t)upSaved.X, ",", (int32_t)upSaved.Y, " ",
++                (int32_t)upSaved.Width, "x", (int32_t)upSaved.Height,
++        " tex0rt=", upSamplesRt ? (int32_t)upT0->Desc()->Width : 0,
++        " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]",
++        " -> ", upWhy));
+     }
+ 
+     // M3.5: HUD/UI both-eyes duplication, MEASURED gate. Full-size UP draws
+@@ -3381,17 +3407,8 @@ namespace dxvk {
+     // both eyes; 80 scene blits sample the full-size RT - duplicating THOSE
+     // recursively squeezed the SBS pair and shredded the frame in M3.2/M3.3.
+     // Gate: only duplicate when tex0 is not a render target.
+-    if (stArmed && !stInDup && !ShouldRecord()) {
+-      const D3D9CommonTexture* upT0 = GetCommonTexture(m_state.textures[0]);
+-      const bool upSamplesRt = upT0 != nullptr
+-        && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
+-      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+-      const D3DVIEWPORT9 upSaved = m_state.viewport;
+-      if (!upSamplesRt && upRt2 != nullptr
+-       && upRt2->Desc()->Width  == upSaved.Width
+-       && upRt2->Desc()->Height == upSaved.Height
+-       && upSaved.X == 0 && upSaved.Y == 0
+-       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
++    {
++      if (upWhy == kUpDup) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+         upHalf.Width = upSaved.Width / 2;
+@@ -3462,39 +3479,51 @@ namespace dxvk {
+     if (unlikely(!PrimitiveCount || !NumVertices))
+       return D3D_OK;
+ 
+-    if (fmArmed && fmUpLogged < 300 && pVertexStreamZeroData != nullptr) {
++    // M3.9: verdict-logged UP path (see DrawPrimitiveUP).
++    const D3D9CommonTexture* upT0 = GetCommonTexture(m_state.textures[0]);
++    const bool upSamplesRt = upT0 != nullptr
++      && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
++    const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
++    const D3DVIEWPORT9 upSaved = m_state.viewport;
++    static const char* const kUpDup = "DUP";
++    const char* upWhy = kUpDup;
++    if      (!stArmed)         upWhy = "no-stereo";
++    else if (stInDup)          upWhy = "in-dup";
++    else if (ShouldRecord())   upWhy = "recording";
++    else if (upSamplesRt)      upWhy = "samples-rt";
++    else if (upRt2 == nullptr) upWhy = "no-rt";
++    else if (upRt2->Desc()->Width  != upSaved.Width
++          || upRt2->Desc()->Height != upSaved.Height) upWhy = "vp!=rt";
++    else if (upSaved.X != 0 || upSaved.Y != 0) upWhy = "vp-offset";
++    else if (upSaved.Width < 1024)             upWhy = "rt-small";
++    else if (!(upSaved.Width > upSaved.Height)) upWhy = "rt-portrait";
++
++    if (fmActive && pVertexStreamZeroData != nullptr) {
+       fmUpLogged += 1;
+-      const D3D9CommonTexture* upRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+       const float* v0 = static_cast<const float*>(pVertexStreamZeroData);
+-      Logger::info(str::format("FM up DIP prim=", (int32_t)PrimitiveType,
++      Logger::info(str::format("FM d", fmDraw++, " upDIP prim=", (int32_t)PrimitiveType,
+         " n=", PrimitiveCount, " nv=", NumVertices,
+         " stride=", VertexStreamZeroStride,
+         " posT=", m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT) ? 1 : 0,
+-        " rt=", upRt ? (int32_t)upRt->Desc()->Width : -1, "x",
+-                upRt ? (int32_t)upRt->Desc()->Height : -1,
+-        " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
+         " zen=", m_state.renderStates[D3DRS_ZENABLE],
+         " zf=", m_state.renderStates[D3DRS_ZFUNC],
+-        " tex0rt=", [this] {
+-          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
+-          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
+-            ? (int32_t)t0->Desc()->Width : 0;
+-        }(),
+-        " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
++        " zw=", m_state.renderStates[D3DRS_ZWRITEENABLE],
++        " ab=", m_state.renderStates[D3DRS_ALPHABLENDENABLE],
++        " sb=", m_state.renderStates[D3DRS_SRCBLEND],
++        " db=", m_state.renderStates[D3DRS_DESTBLEND],
++        " rt=", upRt2 ? (int32_t)upRt2->Desc()->Width : -1, "x",
++                upRt2 ? (int32_t)upRt2->Desc()->Height : -1,
++        " fmt=", upRt2 ? (int32_t)upRt2->Desc()->Format : -1,
++        " vp=", (int32_t)upSaved.X, ",", (int32_t)upSaved.Y, " ",
++                (int32_t)upSaved.Width, "x", (int32_t)upSaved.Height,
++        " tex0rt=", upSamplesRt ? (int32_t)upT0->Desc()->Width : 0,
++        " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]",
++        " -> ", upWhy));
+     }
+ 
+     // M3.5: HUD/UI both-eyes duplication, measured gate (see DrawPrimitiveUP).
+-    if (stArmed && !stInDup && !ShouldRecord()) {
+-      const D3D9CommonTexture* upT0 = GetCommonTexture(m_state.textures[0]);
+-      const bool upSamplesRt = upT0 != nullptr
+-        && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
+-      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+-      const D3DVIEWPORT9 upSaved = m_state.viewport;
+-      if (!upSamplesRt && upRt2 != nullptr
+-       && upRt2->Desc()->Width  == upSaved.Width
+-       && upRt2->Desc()->Height == upSaved.Height
+-       && upSaved.X == 0 && upSaved.Y == 0
+-       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
++    {
++      if (upWhy == kUpDup) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+         upHalf.Width = upSaved.Width / 2;
+-- 
+2.43.0
+

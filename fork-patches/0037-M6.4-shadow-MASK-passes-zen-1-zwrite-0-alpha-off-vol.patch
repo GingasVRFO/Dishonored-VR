@@ -1,0 +1,51 @@
+From b8a8173d632dddaf83545ea353b19d7b04267e99 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 25 Aug 2026 21:49:15 +0000
+Subject: [PATCH 37/52] M6.4: shadow MASK passes (zen=1 zwrite=0 alpha-off
+ volume geometry) join the world splice - measured pair mechanism
+
+---
+ src/d3d9/d3d9_device.cpp | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 0a7660e9..854507dd 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4397,7 +4397,15 @@ namespace dxvk {
+     // (occlusion-query volumes) are ab=0 AND tex0rt=0, so they stay excluded.
+     const bool upWorldFx =
+          m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
+-      && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt)
++      // M6.4: MEASURED (frame capture d1437/d1440): each shadow is a PAIR -
++      // a volume MASK pass (zen=1, zwrite=0, alpha OFF) then the projection
++      // pass (b41d2dc7 family). The alpha-blend requirement here demoted
++      // the mask to kUpDup (duplicated, NO eye shear) while the projection
++      // was spliced WITH shear - the two passes disagreed inside each eye,
++      // which is exactly the artifact. Depth-tested + no-z-write + real
++      // perspective c0 IS world volume geometry, blend or not.
++      && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt
++          || m_state.renderStates[D3DRS_ZWRITEENABLE] == FALSE)
+       && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
+       && stHaveVP
+       && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
+@@ -4794,7 +4802,15 @@ namespace dxvk {
+     // (occlusion-query volumes) are ab=0 AND tex0rt=0, so they stay excluded.
+     const bool upWorldFx =
+          m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
+-      && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt)
++      // M6.4: MEASURED (frame capture d1437/d1440): each shadow is a PAIR -
++      // a volume MASK pass (zen=1, zwrite=0, alpha OFF) then the projection
++      // pass (b41d2dc7 family). The alpha-blend requirement here demoted
++      // the mask to kUpDup (duplicated, NO eye shear) while the projection
++      // was spliced WITH shear - the two passes disagreed inside each eye,
++      // which is exactly the artifact. Depth-tested + no-z-write + real
++      // perspective c0 IS world volume geometry, blend or not.
++      && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt
++          || m_state.renderStates[D3DRS_ZWRITEENABLE] == FALSE)
+       && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
+       && stHaveVP
+       && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
+-- 
+2.43.0
+

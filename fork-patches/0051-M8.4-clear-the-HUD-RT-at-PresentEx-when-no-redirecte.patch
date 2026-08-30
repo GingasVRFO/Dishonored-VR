@@ -1,0 +1,43 @@
+From b2901b7949c0fca863ef288d766f8cee8d0c2375 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 30 Aug 2026 03:27:58 +0000
+Subject: [PATCH 51/52] M8.4: clear the HUD RT at PresentEx when no redirected
+ draw arrived - stale wrist pixels (carry icon, load junk)
+
+---
+ src/d3d9/d3d9_device.cpp | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index ef421fae..49b78651 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -6734,6 +6734,25 @@ namespace dxvk {
+     // M3.1: publish the finished frame's spliced-draw count for the proxy.
+     dxvk_vr_splices = stSpliceAccum;
+     stSpliceAccum = 0;
++    // M8.4: STALE WRIST PIXELS. The HUD RT clear was lazy - it ran inside
++    // VrHudRedirect on the first redirected draw of a frame. Dishonored's
++    // HUD is minimalist (bars hide when full), so after dropping a carried
++    // body there can be ZERO UI draws for minutes: no draw, no clear, and
++    // the carry icon's last pixels sit on the wrist panel indefinitely
++    // ("they're not going away even after dropping items"). Same at load -
++    // stale junk until a conversation forces the HUD to redraw. If the
++    // frame that just ended had the redirect on but no redirected draw
++    // arrived, clear the RT here so the proxy's next readback sees black.
++    if (dxvk_vr_hudwrist && vrHudSurf != nullptr &&
++        vrHudCleared != vrHudFrameNo) {
++      vrHudCleared = vrHudFrameNo;
++      IDirect3DSurface9* savedRt = nullptr;
++      GetRenderTarget(0, &savedRt);
++      SetRenderTarget(0, vrHudSurf);
++      Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 0.f, 0);
++      SetRenderTarget(0, savedRt);
++      if (savedRt) savedRt->Release();
++    }
+     vrHudFrameNo += 1;   // M6.0: lets the HUD RT clear once per frame
+ 
+     // M3.8: an on-demand request arms the dump machinery even when the
+-- 
+2.43.0
+

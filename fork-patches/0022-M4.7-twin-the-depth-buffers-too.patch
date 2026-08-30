@@ -1,0 +1,104 @@
+From 4f5743c8a30d359b64271df3ef07d8fbd096ca80 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 20 Aug 2026 23:47:48 +0000
+Subject: [PATCH 22/52] M4.7: twin the depth buffers too
+
+The two eyes see the same geometry from different positions, so they do not
+agree about what is in front of what. Sharing one depth buffer would occlusion-
+test the second eye against the FIRST eye's depth, and the error is largest
+exactly where stereo matters most - near objects close to the face. That would
+look almost right and be very hard to attribute later, which is worse than
+looking obviously wrong now.
+
+Uses the same backbuffer-derived test as the colour twins, so the two sets
+cannot disagree about which targets are eye-dependent.
+---
+ src/d3d9/d3d9_device.cpp | 58 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 57 insertions(+), 1 deletion(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 7822c184..a8c49bf9 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -166,6 +166,25 @@ namespace dxvk {
+   static VrTwin   vrTwins[48] = {};
+   static uint32_t vrTwinN     = 0;
+   static uint64_t vrTwinBytes = 0;
++  // M4.7: DEPTH HAS TO BE TWINNED TOO.
++  // The two eyes see the same geometry from different positions, so they do not
++  // agree about what is in front of what. Sharing one depth buffer means the
++  // second eye is occlusion-tested against the FIRST eye's depth, and the error
++  // is largest exactly where stereo matters most - near objects, close to the
++  // face. Rendering both eyes into their own colour target while sharing depth
++  // would look almost right and be very hard to diagnose later, which is worse
++  // than looking obviously wrong now.
++  struct VrDepth { IDirect3DSurface9* left; IDirect3DSurface9* right;
++                   uint32_t w, h; };
++  static VrDepth  vrDepths[16] = {};
++  static uint32_t vrDepthN     = 0;
++  // Look up the right-eye counterpart of whatever is currently bound. Returns
++  // null when there is no twin, which is the signal to leave a draw alone.
++  static IDirect3DSurface9* VrTwinOfDepth(IDirect3DSurface9* left) {
++    for (uint32_t i = 0; i < vrDepthN; i++)
++      if (vrDepths[i].left == left) return vrDepths[i].right;
++    return nullptr;
++  }
+   static uint32_t fmMarkHits = 0;
+   // M3.15: the locator named the draws; this decides what they ARE. Setting
+   // dxvk_vr_markkill to 1 skips every draw whose constants sit near the
+@@ -1363,7 +1382,7 @@ namespace dxvk {
+           BOOL                Discard,
+           IDirect3DSurface9** ppSurface,
+           HANDLE*             pSharedHandle) {
+-    return CreateDepthStencilSurfaceEx(
++    HRESULT dhr = CreateDepthStencilSurfaceEx(
+       Width,
+       Height,
+       Format,
+@@ -1373,6 +1392,43 @@ namespace dxvk {
+       ppSurface,
+       pSharedHandle,
+       0);
++
++    // M4.7: a right-eye depth buffer for every viewport-derived one, using the
++    // same "is it derived from the backbuffer" test as the colour twins so the
++    // two sets cannot disagree about which targets are eye-dependent.
++    static bool vrDepthing = false;
++    if (dxvk_vr_twin && SUCCEEDED(dhr) && !vrDepthing && vrDepthN < 16) {
++      D3DPRESENT_PARAMETERS pp = {};
++      if (m_implicitSwapchain != nullptr)
++        m_implicitSwapchain->GetPresentParameters(&pp);
++      bool eyeDep = false;
++      for (uint32_t div = 1; div <= 8 && pp.BackBufferWidth >= 64 && !eyeDep; div *= 2) {
++        uint32_t w = pp.BackBufferWidth / div, h = pp.BackBufferHeight / div;
++        uint32_t dw = Width  > w ? Width  - w : w - Width;
++        uint32_t dh = Height > h ? Height - h : h - Height;
++        if (dw <= 2 && dh <= 2) eyeDep = true;
++      }
++      if (eyeDep) {
++        vrDepthing = true;
++        IDirect3DSurface9* twin = nullptr;
++        HRESULT thr = CreateDepthStencilSurfaceEx(Width, Height, Format,
++                        MultiSample, MultisampleQuality, Discard, &twin,
++                        nullptr, 0);
++        vrDepthing = false;
++        if (SUCCEEDED(thr) && twin != nullptr) {
++          vrDepths[vrDepthN].left  = *ppSurface;
++          vrDepths[vrDepthN].right = twin;
++          vrDepths[vrDepthN].w = Width; vrDepths[vrDepthN].h = Height;
++          vrDepthN++;
++          Logger::info(str::format("VR depth twin ", vrDepthN, ": ", Width, "x",
++            Height, " fmt=", (int32_t)Format));
++        } else {
++          Logger::warn(str::format("VR depth twin FAILED ", Width, "x", Height,
++            " fmt=", (int32_t)Format, " hr=", thr));
++        }
++      }
++    }
++    return dhr;
+   }
+ 
+ 
+-- 
+2.43.0
+

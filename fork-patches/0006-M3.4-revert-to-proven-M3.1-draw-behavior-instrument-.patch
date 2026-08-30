@@ -1,0 +1,168 @@
+From fb210b04657526ef78923bb101e2ed697a5ce6f5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 09:49:23 +0000
+Subject: [PATCH 06/52] M3.4: revert to proven M3.1 draw behavior; instrument
+ depth state
+
+Small-quad splice (M3.2/M3.3) and UP duplication both misfired on scene
+copy/blit draws and shredded frames. Back to strict PrimitiveCount>2
+splice only. Armed dumps now record zen/zf/zw/ab and whether tex0 is a
+render target on every draw, so the world-quad and UI discriminators can
+be designed from ground truth instead of guessed.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
+---
+ src/d3d9/d3d9_device.cpp | 108 +++++++++++++--------------------------
+ 1 file changed, 35 insertions(+), 73 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 1c008122..d51bca72 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3178,7 +3178,16 @@ namespace dxvk {
+ 
+     if (fmActive)
+       Logger::info(str::format("FM d", fmDraw++, " DIP prim=",
+-        (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices));
++        (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices,
++        " zen=", m_state.renderStates[D3DRS_ZENABLE],
++        " zf=", m_state.renderStates[D3DRS_ZFUNC],
++        " zw=", m_state.renderStates[D3DRS_ZWRITEENABLE],
++        " ab=", m_state.renderStates[D3DRS_ALPHABLENDENABLE],
++        " tex0rt=", [this] {
++          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
++          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
++            ? (int32_t)t0->Desc()->Width : 0;
++        }()));
+ 
+     // M3: stereo splice. Qualifying scene draws are replayed once per eye
+     // into half viewports with a per-eye shifted VP. Gate:
+@@ -3187,19 +3196,14 @@ namespace dxvk {
+     //    norm ~1 for perspective, ~0 for ortho/UI),
+     //  - the bound RT0 is large landscape and the viewport covers all of it
+     //    (excludes shadow passes, bloom/LUT tiles, the 800x800 light tile),
+-    //  - the draw is real geometry: more than 2 primitives, OR a small quad
+-    //    drawn with depth testing ON (world-placed glass/decals - these MUST
+-    //    be spliced or they render full-frame and phantom in one eye).
+-    //    Depth-test-OFF quads are screen-space resolve/post copies and stay
+-    //    mono - they are per-pixel copies, so they preserve the SBS layout.
+-    //    (The M3.2 c6-identity test was wrong: post quads can carry a stale
+-    //    non-identity c6, and splicing a scene copy compounds through the
+-    //    post chain into total frame shredding. ZENABLE is authoritative:
+-    //    screen-space copies never depth-test, world geometry always does.)
++    //  - the draw is real geometry, not a full-screen quad. M3.4: back to the
++    //    strict PrimitiveCount>2 gate - the proven-visible M3.1 behavior.
++    //    Both attempts to also splice world-placed 2-tri quads (c6 identity
++    //    in M3.2, ZENABLE in M3.3) misclassified scene-copy quads and
++    //    shredded the frame; the phantom-quad fix returns once an armed dump
++    //    with per-draw depth state identifies the real discriminator.
+     //  - no state block is recording.
+-    if (stArmed && !stInDup && stHaveVP
+-     && (PrimitiveCount > 2
+-      || m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE)
++    if (stArmed && !stInDup && stHaveVP && PrimitiveCount > 2
+      && !ShouldRecord()) {
+       float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
+       const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+@@ -3308,41 +3312,19 @@ namespace dxvk {
+         " rt=", upRt ? (int32_t)upRt->Desc()->Width : -1, "x",
+                 upRt ? (int32_t)upRt->Desc()->Height : -1,
+         " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
++        " zen=", m_state.renderStates[D3DRS_ZENABLE],
++        " zf=", m_state.renderStates[D3DRS_ZFUNC],
++        " tex0rt=", [this] {
++          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
++          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
++            ? (int32_t)t0->Desc()->Width : 0;
++        }(),
+         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
+     }
+ 
+-    // M3.2: HUD/UI both-eyes duplication. UE3's Canvas/Scaleform UI comes
+-    // through the *UP paths with shader-transformed vertices (posT=0,
+-    // measured), so the viewport transform applies - replaying the draw into
+-    // each half viewport puts the HUD in both eyes at screen depth. No
+-    // constant changes: UI transforms don't live in c0-c3. M3.3: only for
+-    // depth-test-OFF draws - anything depth-tested through UP is scene
+-    // content (sprites/particles) and must not be plain-duplicated.
+-    if (stArmed && !stInDup
+-     && m_state.renderStates[D3DRS_ZENABLE] == D3DZB_FALSE
+-     && !ShouldRecord()) {
+-      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+-      const D3DVIEWPORT9 upSaved = m_state.viewport;
+-      if (upRt2 != nullptr
+-       && upRt2->Desc()->Width  == upSaved.Width
+-       && upRt2->Desc()->Height == upSaved.Height
+-       && upSaved.X == 0 && upSaved.Y == 0
+-       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
+-        stInDup = true;
+-        D3DVIEWPORT9 upHalf = upSaved;
+-        upHalf.Width = upSaved.Width / 2;
+-        for (uint32_t e = 0; e < 2; e++) {
+-          upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+-          SetViewport(&upHalf);
+-          DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+-            pVertexStreamZeroData, VertexStreamZeroStride);
+-        }
+-        SetViewport(&upSaved);
+-        stInDup = false;
+-        stSpliceAccum += 1;   // UI dup counts as stereo content for the proxy
+-        return D3D_OK;
+-      }
+-    }
++    // M3.4: UP duplication disabled pending evidence - full-size UP draws can
++    // include scene blits, and duplicating those shreds the frame the same
++    // way as splicing copy quads. Returns with a measured discriminator.
+ 
+     PrepareDraw(PrimitiveType, false, false);
+ 
+@@ -3409,37 +3391,17 @@ namespace dxvk {
+         " rt=", upRt ? (int32_t)upRt->Desc()->Width : -1, "x",
+                 upRt ? (int32_t)upRt->Desc()->Height : -1,
+         " vp=", m_state.viewport.Width, "x", m_state.viewport.Height,
++        " zen=", m_state.renderStates[D3DRS_ZENABLE],
++        " zf=", m_state.renderStates[D3DRS_ZFUNC],
++        " tex0rt=", [this] {
++          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
++          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
++            ? (int32_t)t0->Desc()->Width : 0;
++        }(),
+         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]"));
+     }
+ 
+-    // M3.2: HUD/UI both-eyes duplication (see DrawPrimitiveUP).
+-    // M3.3: depth-test-OFF only.
+-    if (stArmed && !stInDup
+-     && m_state.renderStates[D3DRS_ZENABLE] == D3DZB_FALSE
+-     && !ShouldRecord()) {
+-      const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+-      const D3DVIEWPORT9 upSaved = m_state.viewport;
+-      if (upRt2 != nullptr
+-       && upRt2->Desc()->Width  == upSaved.Width
+-       && upRt2->Desc()->Height == upSaved.Height
+-       && upSaved.X == 0 && upSaved.Y == 0
+-       && upSaved.Width >= 1024 && upSaved.Width > upSaved.Height) {
+-        stInDup = true;
+-        D3DVIEWPORT9 upHalf = upSaved;
+-        upHalf.Width = upSaved.Width / 2;
+-        for (uint32_t e = 0; e < 2; e++) {
+-          upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+-          SetViewport(&upHalf);
+-          DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+-            PrimitiveCount, pIndexData, IndexDataFormat,
+-            pVertexStreamZeroData, VertexStreamZeroStride);
+-        }
+-        SetViewport(&upSaved);
+-        stInDup = false;
+-        stSpliceAccum += 1;   // UI dup counts as stereo content for the proxy
+-        return D3D_OK;
+-      }
+-    }
++    // M3.4: UP duplication disabled pending evidence (see DrawPrimitiveUP).
+ 
+     PrepareDraw(PrimitiveType, false, false);
+ 
+-- 
+2.43.0
+

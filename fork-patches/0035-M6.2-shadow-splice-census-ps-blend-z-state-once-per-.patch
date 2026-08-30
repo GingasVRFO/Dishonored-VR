@@ -1,0 +1,80 @@
+From 10f4042a86d23574748d4ca72ded60ccf6fc78b7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 25 Aug 2026 21:25:43 +0000
+Subject: [PATCH 35/52] M6.2: shadow-splice census (ps + blend/z state, once
+ per launch) on the M5.8 family recognition
+
+---
+ src/d3d9/d3d9_device.cpp | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 7cad35c6..d99be017 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -553,6 +553,26 @@ namespace dxvk {
+     return false;
+   }
+ 
++  // M6.2: shadow-splice census. M5.8's family recognition broke other
++  // lights with no capture to say WHICH cousins were wrongly spliced. Every
++  // distinct ps the shadow splice touches now logs once per launch WITH its
++  // blend/z state - the door draw was modulate-blend, so if the broken
++  // cousins show a different blend the fix is a state gate, no capture
++  // needed.
++  static void VrShadowCensusLog(uint32_t pf, uint32_t sb, uint32_t db,
++                                uint32_t zen, uint32_t prims) {
++    static uint32_t seen[32];
++    static uint32_t seenN = 0;
++    for (uint32_t i = 0; i < seenN; i++)
++      if (seen[i] == pf) return;
++    if (seenN >= 32) return;
++    seen[seenN++] = pf;
++    char hx[16];
++    std::snprintf(hx, sizeof(hx), "%08x", pf);
++    Logger::info(str::format("VR shadowfix: SPLICING ps=", hx, " sb=", sb,
++                             " db=", db, " zen=", zen, " prims=", prims));
++  }
++
+   // M6.1: redirect census - each distinct pixel shader that passes through
+   // the wrist redirect is logged ONCE per launch, so a wrongly-captured
+   // element (quest markers, world imposters) can be identified by hash and
+@@ -4212,6 +4232,11 @@ namespace dxvk {
+           m_state.pixelShader != nullptr &&
+           VrPsShadowRegs(m_state.pixelShader.ptr(), &dipS2w, &dipS2s);
+         if (shDo) {
++          VrShadowCensusLog(VrPsFnvOf(m_state.pixelShader.ptr()),
++                            m_state.renderStates[D3DRS_SRCBLEND],
++                            m_state.renderStates[D3DRS_DESTBLEND],
++                            m_state.renderStates[D3DRS_ZENABLE],
++                            PrimitiveCount);
+           const float* pdc = reinterpret_cast<const float*>(
+             m_state.psConsts->fConsts);
+           std::memcpy(shSave,      pdc + dipS2w * 4, 16 * sizeof(float));
+@@ -4539,6 +4564,11 @@ namespace dxvk {
+       if (dxvk_vr_shadowfix && stArmed && stHaveVP && !stInDup &&
+           m_state.pixelShader != nullptr &&
+           VrPsShadowRegs(m_state.pixelShader.ptr(), &vrS2w, &vrS2s)) {
++        VrShadowCensusLog(VrPsFnvOf(m_state.pixelShader.ptr()),
++                          m_state.renderStates[D3DRS_SRCBLEND],
++                          m_state.renderStates[D3DRS_DESTBLEND],
++                          m_state.renderStates[D3DRS_ZENABLE],
++                          PrimitiveCount);
+         const D3DVIEWPORT9 savedVp = m_state.viewport;
+         D3DVIEWPORT9 half = savedVp;
+         half.Width = savedVp.Width / 2;
+@@ -4921,6 +4951,11 @@ namespace dxvk {
+       if (dxvk_vr_shadowfix && stArmed && stHaveVP && !stInDup &&
+           m_state.pixelShader != nullptr &&
+           VrPsShadowRegs(m_state.pixelShader.ptr(), &vrS2w, &vrS2s)) {
++        VrShadowCensusLog(VrPsFnvOf(m_state.pixelShader.ptr()),
++                          m_state.renderStates[D3DRS_SRCBLEND],
++                          m_state.renderStates[D3DRS_DESTBLEND],
++                          m_state.renderStates[D3DRS_ZENABLE],
++                          PrimitiveCount);
+         const D3DVIEWPORT9 savedVp = m_state.viewport;
+         D3DVIEWPORT9 half = savedVp;
+         half.Width = savedVp.Width / 2;
+-- 
+2.43.0
+

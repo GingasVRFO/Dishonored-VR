@@ -1,0 +1,170 @@
+From 9eb50b907da259d4a5b96342acd0c726f27f1351 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 25 Aug 2026 21:36:15 +0000
+Subject: [PATCH 36/52] M6.3: recognize shadow-ONLY variants
+ (ScreenToShadowMatrix without ScreenToWorld) - the pub light volumes
+
+---
+ src/d3d9/d3d9_device.cpp | 69 ++++++++++++++++++++++++++++------------
+ 1 file changed, 49 insertions(+), 20 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index d99be017..0a7660e9 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4239,7 +4239,8 @@ namespace dxvk {
+                             PrimitiveCount);
+           const float* pdc = reinterpret_cast<const float*>(
+             m_state.psConsts->fConsts);
+-          std::memcpy(shSave,      pdc + dipS2w * 4, 16 * sizeof(float));
++          if (dipS2w != 0xffffu)   // M6.3: shadow-only variants have no S2W
++            std::memcpy(shSave,    pdc + dipS2w * 4, 16 * sizeof(float));
+           std::memcpy(shSave + 16, pdc + dipS2s * 4, 16 * sizeof(float));
+         }
+         for (uint32_t e = 0; e < 2; e++) {
+@@ -4258,16 +4259,19 @@ namespace dxvk {
+             SetPixelShaderConstantF(1, uvEye, 1);
+           }
+           if (shDo) {
++            const bool dHasW = dipS2w != 0xffffu;
+             float m2[32];
+             std::memcpy(m2, shSave, sizeof(m2));
+             for (int k3 = 0; k3 < 4; k3++) {
+               // c8/c9 from c6, c12/c13 from c10 (offsets into the c6.. block)
+-              m2[8  + k3] = shSave[8  + k3] - s * shSave[0  + k3];
+-              m2[12 + k3] = shSave[12 + k3] + s * stConvNow * shSave[0  + k3];
++              if (dHasW) {
++                m2[8  + k3] = shSave[8  + k3] - s * shSave[0  + k3];
++                m2[12 + k3] = shSave[12 + k3] + s * stConvNow * shSave[0  + k3];
++              }
+               m2[24 + k3] = shSave[24 + k3] - s * shSave[16 + k3];
+               m2[28 + k3] = shSave[28 + k3] + s * stConvNow * shSave[16 + k3];
+             }
+-            SetPixelShaderConstantF(dipS2w, m2, 4);
++            if (dHasW) SetPixelShaderConstantF(dipS2w, m2, 4);
+             SetPixelShaderConstantF(dipS2s, m2 + 16, 4);
+             static uint32_t vrShadowTold = 0;
+             if (vrShadowTold < 2 && e == 0) { vrShadowTold++;
+@@ -4279,7 +4283,7 @@ namespace dxvk {
+             MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
+         }
+         if (shDo) {
+-          SetPixelShaderConstantF(dipS2w, shSave, 4);
++          if (dipS2w != 0xffffu) SetPixelShaderConstantF(dipS2w, shSave, 4);
+           SetPixelShaderConstantF(dipS2s, shSave + 16, 4);
+         }
+         if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+@@ -4577,7 +4581,12 @@ namespace dxvk {
+         const float* pcs = reinterpret_cast<const float*>(
+           m_state.psConsts->fConsts);
+         const bool uvDo = StUvGrab(pcs + 4, uvS);
+-        std::memcpy(shSave,      pcs + vrS2w * 4, 16 * sizeof(float));
++        // M6.3: shadow-ONLY variants (ScreenToShadowMatrix without
++        // ScreenToWorld - e.g. b41d2dc7, the pub light volumes) carry the
++        // 0xffff sentinel in s2w and correct just the one matrix.
++        const bool shHasW = vrS2w != 0xffffu;
++        if (shHasW)
++          std::memcpy(shSave,    pcs + vrS2w * 4, 16 * sizeof(float));
+         std::memcpy(shSave + 16, pcs + vrS2s * 4, 16 * sizeof(float));
+         stInDup = true;
+         for (uint32_t e = 0; e < 2; e++) {
+@@ -4599,17 +4608,19 @@ namespace dxvk {
+           std::memcpy(m2, shSave, sizeof(m2));
+           for (int k3 = 0; k3 < 4; k3++) {
+             // columns: reg0=x, reg2=z, reg3=translation, per matrix
+-            m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
+-            m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
++            if (shHasW) {
++              m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
++              m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
++            }
+             m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
+             m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
+           }
+-          SetPixelShaderConstantF(vrS2w, m2, 4);
++          if (shHasW) SetPixelShaderConstantF(vrS2w, m2, 4);
+           SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
+           DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
+-        SetPixelShaderConstantF(vrS2w, shSave, 4);
++        if (shHasW) SetPixelShaderConstantF(vrS2w, shSave, 4);
+         SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
+         if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
+         SetVertexShaderConstantF(0, stVP, 4);
+@@ -4964,7 +4975,12 @@ namespace dxvk {
+         const float* pcs = reinterpret_cast<const float*>(
+           m_state.psConsts->fConsts);
+         const bool uvDo = StUvGrab(pcs + 4, uvS);
+-        std::memcpy(shSave,      pcs + vrS2w * 4, 16 * sizeof(float));
++        // M6.3: shadow-ONLY variants (ScreenToShadowMatrix without
++        // ScreenToWorld - e.g. b41d2dc7, the pub light volumes) carry the
++        // 0xffff sentinel in s2w and correct just the one matrix.
++        const bool shHasW = vrS2w != 0xffffu;
++        if (shHasW)
++          std::memcpy(shSave,    pcs + vrS2w * 4, 16 * sizeof(float));
+         std::memcpy(shSave + 16, pcs + vrS2s * 4, 16 * sizeof(float));
+         stInDup = true;
+         for (uint32_t e = 0; e < 2; e++) {
+@@ -4986,18 +5002,20 @@ namespace dxvk {
+           std::memcpy(m2, shSave, sizeof(m2));
+           for (int k3 = 0; k3 < 4; k3++) {
+             // columns: reg0=x, reg2=z, reg3=translation, per matrix
+-            m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
+-            m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
++            if (shHasW) {
++              m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
++              m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
++            }
+             m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
+             m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
+           }
+-          SetPixelShaderConstantF(vrS2w, m2, 4);
++          if (shHasW) SetPixelShaderConstantF(vrS2w, m2, 4);
+           SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
+           DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+             PrimitiveCount, pIndexData, IndexDataFormat,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
+-        SetPixelShaderConstantF(vrS2w, shSave, 4);
++        if (shHasW) SetPixelShaderConstantF(vrS2w, shSave, 4);
+         SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
+         if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
+         SetVertexShaderConstantF(0, stVP, 4);
+@@ -5837,17 +5855,28 @@ namespace dxvk {
+       vrPsIds[vrPsIdN].fnv = h;
+       vrPsIdN++;
+       // M5.8: family recognition by constant-table content
++      // M6.3: the SHADOW MATRIX alone is the membership test. The pub
++      // light-volume shader (b41d2dc7, sb=9 modulate, 8-vert world boxes)
++      // has ScreenToShadowMatrix but NO ScreenToWorld - requiring both let
++      // it draw mono across the pair, which was the whole reported bug.
++      // s2w=0xffff marks the shadow-only kind; the splice corrects just the
++      // one matrix there.
+       const int32_t rw = VrCtabFindFloat(pFunction, "ScreenToWorld");
+       const int32_t rs2 = VrCtabFindFloat(pFunction, "ScreenToShadowMatrix");
+-      if (rw >= 0 && rs2 >= 0 && vrPsShadowN < 64) {
++      if (rs2 >= 0 && vrPsShadowN < 64) {
+         vrPsShadow[vrPsShadowN].ps  = *ppShader;
+-        vrPsShadow[vrPsShadowN].s2w = (uint16_t)rw;
++        vrPsShadow[vrPsShadowN].s2w = rw >= 0 ? (uint16_t)rw : (uint16_t)0xffff;
+         vrPsShadow[vrPsShadowN].s2s = (uint16_t)rs2;
+         vrPsShadowN++;
+         char hx2[16]; std::snprintf(hx2, sizeof(hx2), "%08x", h);
+-        Logger::info(str::format("VR shadowfix: shadow-projection variant ",
+-          vrPsShadowN, " recognized (ps ", hx2, ", ScreenToWorld c", rw,
+-          ", ScreenToShadow c", rs2, ")"));
++        if (rw >= 0)
++          Logger::info(str::format("VR shadowfix: shadow-projection variant ",
++            vrPsShadowN, " recognized (ps ", hx2, ", ScreenToWorld c", rw,
++            ", ScreenToShadow c", rs2, ")"));
++        else
++          Logger::info(str::format("VR shadowfix: shadow-ONLY variant ",
++            vrPsShadowN, " recognized (ps ", hx2,
++            ", ScreenToShadow c", rs2, ", no ScreenToWorld)"));
+       }
+       if (h == 0x20e07766u || h == 0x5240e25cu || h == 0x70776930u)
+         Logger::info(str::format("VR shaftfix: recognized light-shaft shader (",
+-- 
+2.43.0
+

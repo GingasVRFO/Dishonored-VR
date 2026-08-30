@@ -1,0 +1,191 @@
+From b12f924f3efd1e0098342dc6ecb8b648b9de9af3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 15 Aug 2026 07:58:47 +0000
+Subject: [PATCH 12/52] M3.10: splice world-space UP effects - the fire fix
+
+Measured, on-demand dump of the fireplace room: 11 UP draws rejected as
+samples-rt with stride=64, zen=1/zf=LESSEQUAL, zw=0, ab=1 and world-space
+vertices. Those are UE3 particle sprites; they sample the scene RT for
+the soft-particle depth fade, and the M3.5 gate read that fetch as 'this
+is a scene blit' and dropped them to mono. Drawn once at full frame width
+they land right of the seam, which is the phantom fire the user saw in
+the right eye only.
+
+New test: depth-tested AND alpha-blended AND not pre-transformed AND a
+sane perspective VP => world effect => full splice (half viewport AND
+per-eye VP, since these vertices go through c0-c3; viewport-only
+duplication would put them in the same place in both eyes at half
+width). Scene blits, bloom, tonemap and HUD are all zen=0/zf=ALWAYS and
+are untouched, as are the 234 opaque stride-12 boxes per frame that look
+like occlusion-query volumes (ab=0). 16 draws change behaviour.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
+---
+ src/d3d9/d3d9_device.cpp | 90 +++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 84 insertions(+), 6 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index fbc268e2..5678bc65 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3366,18 +3366,44 @@ namespace dxvk {
+       && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
+     const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+     const D3DVIEWPORT9 upSaved = m_state.viewport;
+-    static const char* const kUpDup = "DUP";
++    // M3.10: THE FIRE FIX. A UP draw that is depth-tested AND alpha-blended
++    // AND not pre-transformed is a world-space effect - UE3 emits particle
++    // sprites exactly this way (stride 64, quads, zen=1/zf=LESSEQUAL, zw=0).
++    // Measured in the on-demand dump of the fireplace room: 11 such draws,
++    // every one rejected as "samples-rt" because soft particles fetch the
++    // scene RT to fade where they meet geometry. The M3.5 gate read that
++    // fetch as "this is a scene blit" and dropped them to mono - which is the
++    // phantom fire, drawn once at full frame width and landing in the right
++    // eye. Screen content (HUD, blits, bloom, tonemap) is zen=0/zf=ALWAYS and
++    // is untouched by this test, and so are the 234 opaque stride-12 boxes
++    // (ab=0) that look like occlusion-query volumes.
++    //
++    // These draws also need the per-eye VP, not just a half viewport: their
++    // vertices are world-space (v0 reads like [-2806, -27395, 1388]) and go
++    // through c0-c3. Viewport-only duplication - what the UI path does - would
++    // put them at the same place in both eyes at half width. So they get the
++    // full splice treatment, same as DrawIndexedPrimitive.
++    const bool upWorldFx =
++         m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
++      && m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE
++      && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
++      && stHaveVP
++      && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
++      && StDet3(stVP) > 0.0f;
++    static const char* const kUpDup    = "DUP";
++    static const char* const kUpSplice = "SPLICE";
+     const char* upWhy = kUpDup;
+     if      (!stArmed)         upWhy = "no-stereo";
+     else if (stInDup)          upWhy = "in-dup";
+     else if (ShouldRecord())   upWhy = "recording";
+-    else if (upSamplesRt)      upWhy = "samples-rt";
+     else if (upRt2 == nullptr) upWhy = "no-rt";
+     else if (upRt2->Desc()->Width  != upSaved.Width
+           || upRt2->Desc()->Height != upSaved.Height) upWhy = "vp!=rt";
+     else if (upSaved.X != 0 || upSaved.Y != 0) upWhy = "vp-offset";
+     else if (upSaved.Width < 1024)             upWhy = "rt-small";
+     else if (!(upSaved.Width > upSaved.Height)) upWhy = "rt-portrait";
++    else if (upWorldFx)        upWhy = kUpSplice;
++    else if (upSamplesRt)      upWhy = "samples-rt";
+ 
+     if (fmActive && pVertexStreamZeroData != nullptr) {
+       fmUpLogged += 1;
+@@ -3408,16 +3434,29 @@ namespace dxvk {
+     // recursively squeezed the SBS pair and shredded the frame in M3.2/M3.3.
+     // Gate: only duplicate when tex0 is not a render target.
+     {
+-      if (upWhy == kUpDup) {
++      if (upWhy == kUpDup || upWhy == kUpSplice) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+         upHalf.Width = upSaved.Width / 2;
++        float eye[16];
++        const float upSepNow  = dxvk_vr_sep;
++        const float upConvNow = dxvk_vr_conv;
+         for (uint32_t e = 0; e < 2; e++) {
+           upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+           SetViewport(&upHalf);
++          if (upWhy == kUpSplice) {          // world-space: shift the eye too
++            float s = e == 0 ? -upSepNow : upSepNow;
++            std::memcpy(eye, stVP, sizeof(eye));
++            eye[0]  += s * eye[3];
++            eye[4]  += s * eye[7];
++            eye[8]  += s * eye[11];
++            eye[12] += s * eye[15] - s * upConvNow;
++            SetVertexShaderConstantF(0, eye, 4);
++          }
+           DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
++        if (upWhy == kUpSplice) SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&upSaved);
+         stInDup = false;
+         stSpliceAccum += 1;
+@@ -3485,18 +3524,44 @@ namespace dxvk {
+       && (upT0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
+     const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+     const D3DVIEWPORT9 upSaved = m_state.viewport;
+-    static const char* const kUpDup = "DUP";
++    // M3.10: THE FIRE FIX. A UP draw that is depth-tested AND alpha-blended
++    // AND not pre-transformed is a world-space effect - UE3 emits particle
++    // sprites exactly this way (stride 64, quads, zen=1/zf=LESSEQUAL, zw=0).
++    // Measured in the on-demand dump of the fireplace room: 11 such draws,
++    // every one rejected as "samples-rt" because soft particles fetch the
++    // scene RT to fade where they meet geometry. The M3.5 gate read that
++    // fetch as "this is a scene blit" and dropped them to mono - which is the
++    // phantom fire, drawn once at full frame width and landing in the right
++    // eye. Screen content (HUD, blits, bloom, tonemap) is zen=0/zf=ALWAYS and
++    // is untouched by this test, and so are the 234 opaque stride-12 boxes
++    // (ab=0) that look like occlusion-query volumes.
++    //
++    // These draws also need the per-eye VP, not just a half viewport: their
++    // vertices are world-space (v0 reads like [-2806, -27395, 1388]) and go
++    // through c0-c3. Viewport-only duplication - what the UI path does - would
++    // put them at the same place in both eyes at half width. So they get the
++    // full splice treatment, same as DrawIndexedPrimitive.
++    const bool upWorldFx =
++         m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
++      && m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE
++      && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
++      && stHaveVP
++      && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
++      && StDet3(stVP) > 0.0f;
++    static const char* const kUpDup    = "DUP";
++    static const char* const kUpSplice = "SPLICE";
+     const char* upWhy = kUpDup;
+     if      (!stArmed)         upWhy = "no-stereo";
+     else if (stInDup)          upWhy = "in-dup";
+     else if (ShouldRecord())   upWhy = "recording";
+-    else if (upSamplesRt)      upWhy = "samples-rt";
+     else if (upRt2 == nullptr) upWhy = "no-rt";
+     else if (upRt2->Desc()->Width  != upSaved.Width
+           || upRt2->Desc()->Height != upSaved.Height) upWhy = "vp!=rt";
+     else if (upSaved.X != 0 || upSaved.Y != 0) upWhy = "vp-offset";
+     else if (upSaved.Width < 1024)             upWhy = "rt-small";
+     else if (!(upSaved.Width > upSaved.Height)) upWhy = "rt-portrait";
++    else if (upWorldFx)        upWhy = kUpSplice;
++    else if (upSamplesRt)      upWhy = "samples-rt";
+ 
+     if (fmActive && pVertexStreamZeroData != nullptr) {
+       fmUpLogged += 1;
+@@ -3523,17 +3588,30 @@ namespace dxvk {
+ 
+     // M3.5: HUD/UI both-eyes duplication, measured gate (see DrawPrimitiveUP).
+     {
+-      if (upWhy == kUpDup) {
++      if (upWhy == kUpDup || upWhy == kUpSplice) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+         upHalf.Width = upSaved.Width / 2;
++        float eye[16];
++        const float upSepNow  = dxvk_vr_sep;
++        const float upConvNow = dxvk_vr_conv;
+         for (uint32_t e = 0; e < 2; e++) {
+           upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+           SetViewport(&upHalf);
++          if (upWhy == kUpSplice) {          // world-space: shift the eye too
++            float s = e == 0 ? -upSepNow : upSepNow;
++            std::memcpy(eye, stVP, sizeof(eye));
++            eye[0]  += s * eye[3];
++            eye[4]  += s * eye[7];
++            eye[8]  += s * eye[11];
++            eye[12] += s * eye[15] - s * upConvNow;
++            SetVertexShaderConstantF(0, eye, 4);
++          }
+           DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+             PrimitiveCount, pIndexData, IndexDataFormat,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
++        if (upWhy == kUpSplice) SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&upSaved);
+         stInDup = false;
+         stSpliceAccum += 1;
+-- 
+2.43.0
+

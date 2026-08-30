@@ -1,0 +1,69 @@
+From 749c5cd7fe91e280829bb5968f3d308afe31f988 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 27 Aug 2026 02:10:22 +0000
+Subject: [PATCH 39/52] M6.6: dxvk_vr_reflect kill-switch for the
+ mirrored-camera planar reflection pass
+
+---
+ src/d3d9/d3d9_device.cpp | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 57645751..4a8d0895 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -122,6 +122,14 @@ namespace dxvk {
+   // M5.6: per-eye shadow projection, on by default; shadowfix=0 opts out
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_shadowfix = 1;
+ 
++  // M6.6: PLANAR REFLECTIONS (SceneCaptureReflectActor). The marker capture
++  // named the pub "light pools" as the reflection pass: ~384 draws per frame
++  // rendered with a MIRRORED camera (StDet3 < 0 - the mirrored-vp class)
++  // into a quarter-res region, ONCE, from the mono eye, then composited
++  // into both eyes where it can never match. reflect=0 skips those draws -
++  // the decisive test, and a shippable "reflections off in VR" option.
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_reflect = 1;
++
+   struct VrPsId { IDirect3DPixelShader9* ps; uint32_t fnv; };
+   static VrPsId  vrPsIds[2048];
+   static uint32_t vrPsIdN = 0;
+@@ -292,6 +300,8 @@ namespace dxvk {
+     }
+     if (const char* t = std::strstr(buf, "shadowfix="))
+       dxvk_vr_shadowfix = (uint32_t)std::strtol(t + 10, nullptr, 10);
++    if (const char* t = std::strstr(buf, "reflect="))
++      dxvk_vr_reflect = (uint32_t)std::strtol(t + 8, nullptr, 10);
+     // M4.5: the marker is NOT logged here. M4.4 put a Logger::info in this
+     // lambda and the game stopped loading the DLL entirely - no DXVK log at
+     // all, not even the header, and the proxy could not resolve a single
+@@ -3986,6 +3996,13 @@ namespace dxvk {
+     else if (dpVp.Width < 1024)          dpWhy = "rt-small";
+     else if (!(dpVp.Width > dpVp.Height)) dpWhy = "rt-portrait";
+ 
++    // M6.6: reflections off - drop the mirrored-camera pass entirely
++    if (dxvk_vr_reflect == 0 && !std::strcmp(dpWhy, "mirrored-vp")) {
++      if (fmActive)
++        Logger::info(str::format("FM d", fmDraw++, " DP REFLECT-SKIPPED"));
++      return D3D_OK;
++    }
++
+     if (fmActive)
+       Logger::info(str::format("FM d", fmDraw++, " DP prim=",
+         (int32_t)PrimitiveType, " n=", PrimitiveCount,
+@@ -4145,6 +4162,13 @@ namespace dxvk {
+     else if (stVpS.Width < 1024)        stWhy = "rt-small";
+     else if (!(stVpS.Width > stVpS.Height)) stWhy = "rt-portrait";
+ 
++    // M6.6: reflections off - drop the mirrored-camera pass entirely
++    if (dxvk_vr_reflect == 0 && !std::strcmp(stWhy, "mirrored-vp")) {
++      if (fmActive)
++        Logger::info(str::format("FM d", fmDraw++, " DIP REFLECT-SKIPPED"));
++      return D3D_OK;
++    }
++
+     if (fmActive)
+       Logger::info(str::format("FM d", fmDraw++, " DIP prim=",
+         (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices,
+-- 
+2.43.0
+

@@ -1,0 +1,172 @@
+From f0ed1b5aadc432c54807c0444cb08859ea89c0e5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 15 Aug 2026 07:39:16 +0000
+Subject: [PATCH 10/52] M3.8: on-demand frame dump + per-draw splice verdict
+
+The M2 dump armed at fixed frame numbers (1200/6000/12000), which cannot
+capture 'stand in front of the fire and look at it'. Export a writable
+dxvk_vr_dumpreq the proxy sets from F11; the next frame is dumped.
+
+The dump now prints WHY each DrawIndexedPrimitive was or was not spliced.
+The gate is evaluated once into a verdict string (no-vp / 2tri-nodepth /
+ortho / mirrored-vp / vp!=rt / vp-offset / rt-small / rt-portrait /
+SPLICE) which is both logged and acted on, so the log cannot disagree
+with the behaviour. Also logs RT size+format, viewport, blend factors,
+fw and det - the inputs to every one of those conditions.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
+---
+ src/d3d9/d3d9_device.cpp | 115 +++++++++++++++++++++++++++------------
+ 1 file changed, 81 insertions(+), 34 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 11081437..365860e9 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -53,6 +53,14 @@ namespace dxvk {
+   static int32_t fmDraw   = 0;
+   static int32_t fmRtSw   = 0;
+ 
++  // M3.8: ON-DEMAND frame dump. The M2 dump armed at fixed frame numbers
++  // (1200/6000/12000), which is useless for "capture a frame with fire in
++  // it" - by frame 1200 you are still in the lift. The VR proxy writes 1
++  // here (overlay button / hotkey) and the NEXT frame is dumped, so the user
++  // can stand in front of the thing that renders wrong and press a key.
++  // Cleared by the fork once consumed.
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_dumpreq = 0;
++
+   // ==== VR-fork M3: stereo splice v1 =======================================
+   // Armed by a "dxvk_stereo.txt" marker beside the game exe, optionally
+   // containing "sep=<f> conv=<f>". Frame map (see FRAME_MAP.md) established:
+@@ -3186,19 +3194,6 @@ namespace dxvk {
+     if (unlikely(!PrimitiveCount || !NumVertices))
+       return D3D_OK;
+ 
+-    if (fmActive)
+-      Logger::info(str::format("FM d", fmDraw++, " DIP prim=",
+-        (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices,
+-        " zen=", m_state.renderStates[D3DRS_ZENABLE],
+-        " zf=", m_state.renderStates[D3DRS_ZFUNC],
+-        " zw=", m_state.renderStates[D3DRS_ZWRITEENABLE],
+-        " ab=", m_state.renderStates[D3DRS_ALPHABLENDENABLE],
+-        " tex0rt=", [this] {
+-          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
+-          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
+-            ? (int32_t)t0->Desc()->Width : 0;
+-        }()));
+-
+     // M3: stereo splice. Qualifying scene draws are replayed once per eye
+     // into half viewports with a per-eye shifted VP. Gate:
+     //  - a c0 x4 upload has been seen and it is perspective (the w-column,
+@@ -3214,18 +3209,61 @@ namespace dxvk {
+     //    and stays mono. (The M3.2/M3.3 shredding was never this gate - it
+     //    was the UP-path duplication hitting scene blits; see DrawPrimitiveUP.)
+     //  - no state block is recording.
+-    if (stArmed && !stInDup && stHaveVP
+-     && (PrimitiveCount > 2
+-      || m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE)
+-     && !ShouldRecord()) {
+-      float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
+-      const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+-      const D3DVIEWPORT9 savedVp = m_state.viewport;
+-      if (fw > 0.5f && StDet3(stVP) > 0.0f && stRt != nullptr
+-       && stRt->Desc()->Width  == savedVp.Width
+-       && stRt->Desc()->Height == savedVp.Height
+-       && savedVp.X == 0 && savedVp.Y == 0
+-       && savedVp.Width >= 1024 && savedVp.Width > savedVp.Height) {
++    //
++    // M3.8: the gate is now evaluated ONCE, into a verdict, and the frame dump
++    // prints that verdict per draw. Reading "which of the five conditions did
++    // this draw fail" straight out of the log is the whole point - the fire
++    // renders in one eye and the previous dump format could not say why,
++    // because it logged draw state and the gate lived somewhere else. Any
++    // future "X renders mono" is now a grep, not a guess.
++    const D3D9CommonTexture* stRt  = GetCommonTexture(m_state.renderTargets[0].ptr());
++    const D3DVIEWPORT9       stVpS = m_state.viewport;
++    const float stFw  = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
++    const float stDet = StDet3(stVP);
++    static const char* const kSplice = "SPLICE";
++    const char* stWhy = kSplice;
++    if      (!stArmed)                  stWhy = "no-stereo";
++    else if (stInDup)                   stWhy = "in-dup";
++    else if (ShouldRecord())            stWhy = "recording";
++    else if (!stHaveVP)                 stWhy = "no-vp";
++    else if (!(PrimitiveCount > 2
++            || m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE))
++                                        stWhy = "2tri-nodepth";
++    else if (!(stFw > 0.5f))            stWhy = "ortho";
++    else if (!(stDet > 0.0f))           stWhy = "mirrored-vp";
++    else if (stRt == nullptr)           stWhy = "no-rt";
++    else if (stRt->Desc()->Width  != stVpS.Width
++          || stRt->Desc()->Height != stVpS.Height)
++                                        stWhy = "vp!=rt";
++    else if (stVpS.X != 0 || stVpS.Y != 0) stWhy = "vp-offset";
++    else if (stVpS.Width < 1024)        stWhy = "rt-small";
++    else if (!(stVpS.Width > stVpS.Height)) stWhy = "rt-portrait";
++
++    if (fmActive)
++      Logger::info(str::format("FM d", fmDraw++, " DIP prim=",
++        (int32_t)PrimitiveType, " n=", PrimitiveCount, " nv=", NumVertices,
++        " zen=", m_state.renderStates[D3DRS_ZENABLE],
++        " zf=", m_state.renderStates[D3DRS_ZFUNC],
++        " zw=", m_state.renderStates[D3DRS_ZWRITEENABLE],
++        " ab=", m_state.renderStates[D3DRS_ALPHABLENDENABLE],
++        " sb=", m_state.renderStates[D3DRS_SRCBLEND],
++        " db=", m_state.renderStates[D3DRS_DESTBLEND],
++        " rt=", stRt != nullptr ? (int32_t)stRt->Desc()->Width : -1,
++          "x", stRt != nullptr ? (int32_t)stRt->Desc()->Height : -1,
++        " fmt=", stRt != nullptr ? (int32_t)stRt->Desc()->Format : -1,
++        " vp=", (int32_t)stVpS.X, ",", (int32_t)stVpS.Y, " ",
++          (int32_t)stVpS.Width, "x", (int32_t)stVpS.Height,
++        " fw=", stFw, " det=", stDet,
++        " tex0rt=", [this] {
++          const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
++          return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
++            ? (int32_t)t0->Desc()->Width : 0;
++        }(),
++        " -> ", stWhy));
++
++    if (stWhy == kSplice) {
++      {
++        const D3DVIEWPORT9 savedVp = stVpS;
+         stInDup = true;
+         D3DVIEWPORT9 half = savedVp;
+         half.Width = savedVp.Width / 2;
+@@ -4548,15 +4586,24 @@ namespace dxvk {
+     dxvk_vr_splices = stSpliceAccum;
+     stSpliceAccum = 0;
+ 
+-    if (fmArmed) {
+-      if (fmActive)
+-        Logger::info(str::format("FM ", fmFrame, " END draws=", fmDraw,
+-                                 " rtsw=", fmRtSw));
+-      fmFrame += 1;
+-      fmActive = (fmFrame == 1200 || fmFrame == 6000 || fmFrame == 12000);
+-      if (fmActive) {
+-        fmDraw = 0; fmRtSw = 0;
+-        Logger::info(str::format("FM ", fmFrame, " BEGIN"));
++    // M3.8: an on-demand request arms the dump machinery even when the
++    // dxvk_framemap.txt marker is absent - the proxy asking for a frame IS
++    // the arming. One frame per request; the request is consumed here.
++    {
++      const bool req = dxvk_vr_dumpreq != 0;
++      if (req) dxvk_vr_dumpreq = 0;
++      if (fmArmed || req || fmActive) {
++        if (fmActive)
++          Logger::info(str::format("FM ", fmFrame, " END draws=", fmDraw,
++                                   " rtsw=", fmRtSw, " splices=", dxvk_vr_splices));
++        fmFrame += 1;
++        fmActive = req || (fmArmed && (fmFrame == 1200 || fmFrame == 6000
++                                    || fmFrame == 12000));
++        if (fmActive) {
++          fmDraw = 0; fmRtSw = 0;
++          Logger::info(str::format("FM ", fmFrame, " BEGIN",
++                                   req ? " (on demand)" : ""));
++        }
+       }
+     }
+ 
+-- 
+2.43.0
+

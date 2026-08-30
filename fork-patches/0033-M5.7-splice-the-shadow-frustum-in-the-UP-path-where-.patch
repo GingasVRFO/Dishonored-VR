@@ -1,0 +1,160 @@
+From 33565bdf2ce8380859c540cce051b59623d2ebfd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 24 Aug 2026 05:21:25 +0000
+Subject: [PATCH 33/52] M5.7: splice the shadow frustum in the UP path where it
+ actually draws
+
+The census proved the modulated-shadow projection (ps 1923f537) arrives
+as an UP draw classified samples-rt - a category the splice leaves mono
+- so it drew ONCE with the mono camera across the pair, and the M5.6
+matrix fix sat in a path it never visits. Now it is spliced completely
+in both UP sites: per-eye half viewports, c0 shear, per-eye c1, plus
+the c6..c13 reconstruction correction.
+---
+ src/d3d9/d3d9_device.cpp | 123 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 123 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 0b46c13c..38219142 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4457,6 +4457,67 @@ namespace dxvk {
+           return D3D_OK;
+         }
+       }
++      // M5.7: THE SHADOW FRUSTUM WAS NEVER SPLICED AT ALL. The census line
++      // (upDIP, samples-rt, ps=1923f537) says the modulated-shadow projection
++      // comes through the UP path and was classified samples-rt - a category
++      // the splice leaves mono on purpose. So it drew ONCE with the MONO
++      // camera across the whole pair; the M5.6 matrix fix sat in a path this
++      // draw never visits. Splice it here, completely: per-eye half
++      // viewports, per-eye c0 shear, per-eye ScreenPositionScaleBias, AND
++      // the M5.6 c6..c13 reconstruction correction - geometry and pixel
++      // math per eye, together or not at all.
++      if (dxvk_vr_shadowfix && stArmed && stHaveVP && !stInDup &&
++          m_state.pixelShader != nullptr &&
++          VrPsFnvOf(m_state.pixelShader.ptr()) == 0x1923f537u) {
++        const D3DVIEWPORT9 savedVp = m_state.viewport;
++        D3DVIEWPORT9 half = savedVp;
++        half.Width = savedVp.Width / 2;
++        float eye[16], shSave[32], uvS[4];
++        const float sepNow = dxvk_vr_sep, convNow = dxvk_vr_conv;
++        const float* pcs = reinterpret_cast<const float*>(
++          m_state.psConsts->fConsts);
++        const bool uvDo = StUvGrab(pcs + 4, uvS);
++        std::memcpy(shSave, pcs + 24, sizeof(shSave));   // c6..c13
++        stInDup = true;
++        for (uint32_t e = 0; e < 2; e++) {
++          const float sh2 = e == 0 ? -sepNow : sepNow;
++          std::memcpy(eye, stVP, sizeof(eye));
++          eye[0]  += sh2 * eye[3];
++          eye[4]  += sh2 * eye[7];
++          eye[8]  += sh2 * eye[11];
++          eye[12] += sh2 * eye[15] - sh2 * convNow;
++          half.X = e == 0 ? savedVp.X : savedVp.X + half.Width;
++          SetViewport(&half);
++          SetVertexShaderConstantF(0, eye, 4);
++          if (uvDo) {
++            float uvE[4];
++            StUvForEye(uvS, savedVp.Width, half.X, half.Width, uvE);
++            SetPixelShaderConstantF(1, uvE, 1);
++          }
++          float m2[32];
++          std::memcpy(m2, shSave, sizeof(m2));
++          for (int k3 = 0; k3 < 4; k3++) {
++            m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
++            m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
++            m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
++            m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
++          }
++          SetPixelShaderConstantF(6, m2, 8);
++          DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
++            pVertexStreamZeroData, VertexStreamZeroStride);
++        }
++        SetPixelShaderConstantF(6, shSave, 8);
++        if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
++        SetVertexShaderConstantF(0, stVP, 4);
++        SetViewport(&savedVp);
++        stInDup = false;
++        stSpliceAccum += 1;
++        static uint32_t vrShTold = 0;
++        if (vrShTold < 3) { vrShTold++;
++          Logger::info("VR shadowfix: shadow frustum SPLICED per eye "
++                       "(was drawn mono as samples-rt)"); }
++        return D3D_OK;
++      }
+       if (dxvk_vr_seq && upWhy == kUpSplice) {
+         // seq: one whole-frame eye. kUpDup is deliberately NOT handled here -
+         // with no split there is no second half to copy the HUD into, so it
+@@ -4773,6 +4834,68 @@ namespace dxvk {
+           return D3D_OK;
+         }
+       }
++      // M5.7: THE SHADOW FRUSTUM WAS NEVER SPLICED AT ALL. The census line
++      // (upDIP, samples-rt, ps=1923f537) says the modulated-shadow projection
++      // comes through the UP path and was classified samples-rt - a category
++      // the splice leaves mono on purpose. So it drew ONCE with the MONO
++      // camera across the whole pair; the M5.6 matrix fix sat in a path this
++      // draw never visits. Splice it here, completely: per-eye half
++      // viewports, per-eye c0 shear, per-eye ScreenPositionScaleBias, AND
++      // the M5.6 c6..c13 reconstruction correction - geometry and pixel
++      // math per eye, together or not at all.
++      if (dxvk_vr_shadowfix && stArmed && stHaveVP && !stInDup &&
++          m_state.pixelShader != nullptr &&
++          VrPsFnvOf(m_state.pixelShader.ptr()) == 0x1923f537u) {
++        const D3DVIEWPORT9 savedVp = m_state.viewport;
++        D3DVIEWPORT9 half = savedVp;
++        half.Width = savedVp.Width / 2;
++        float eye[16], shSave[32], uvS[4];
++        const float sepNow = dxvk_vr_sep, convNow = dxvk_vr_conv;
++        const float* pcs = reinterpret_cast<const float*>(
++          m_state.psConsts->fConsts);
++        const bool uvDo = StUvGrab(pcs + 4, uvS);
++        std::memcpy(shSave, pcs + 24, sizeof(shSave));   // c6..c13
++        stInDup = true;
++        for (uint32_t e = 0; e < 2; e++) {
++          const float sh2 = e == 0 ? -sepNow : sepNow;
++          std::memcpy(eye, stVP, sizeof(eye));
++          eye[0]  += sh2 * eye[3];
++          eye[4]  += sh2 * eye[7];
++          eye[8]  += sh2 * eye[11];
++          eye[12] += sh2 * eye[15] - sh2 * convNow;
++          half.X = e == 0 ? savedVp.X : savedVp.X + half.Width;
++          SetViewport(&half);
++          SetVertexShaderConstantF(0, eye, 4);
++          if (uvDo) {
++            float uvE[4];
++            StUvForEye(uvS, savedVp.Width, half.X, half.Width, uvE);
++            SetPixelShaderConstantF(1, uvE, 1);
++          }
++          float m2[32];
++          std::memcpy(m2, shSave, sizeof(m2));
++          for (int k3 = 0; k3 < 4; k3++) {
++            m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
++            m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
++            m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
++            m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
++          }
++          SetPixelShaderConstantF(6, m2, 8);
++          DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
++            PrimitiveCount, pIndexData, IndexDataFormat,
++            pVertexStreamZeroData, VertexStreamZeroStride);
++        }
++        SetPixelShaderConstantF(6, shSave, 8);
++        if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
++        SetVertexShaderConstantF(0, stVP, 4);
++        SetViewport(&savedVp);
++        stInDup = false;
++        stSpliceAccum += 1;
++        static uint32_t vrShTold = 0;
++        if (vrShTold < 3) { vrShTold++;
++          Logger::info("VR shadowfix: shadow frustum SPLICED per eye "
++                       "(was drawn mono as samples-rt)"); }
++        return D3D_OK;
++      }
+       if (dxvk_vr_seq && upWhy == kUpSplice) {
+         stInDup = true;
+         const bool did = StSeqShift(this);
+-- 
+2.43.0
+

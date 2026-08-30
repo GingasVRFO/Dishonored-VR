@@ -1,0 +1,136 @@
+From 86ea267a2fe1493042eea869fcc8ea7afae44406 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 24 Aug 2026 05:02:39 +0000
+Subject: [PATCH 29/52] M5.5: full pixel-shader census in the frame map
+
+Every FM draw line now carries the bound ps bytecode hash, and every
+unique ps seen during a mapped frame is saved to disk. One Scroll-Lock at
+an artifact produces the complete shader roster to CTAB-decode offline -
+the method that named the shaft trio, generalized. Door-light per-eye
+mismatch is the next target (shadow/light projection suspected).
+---
+ src/d3d9/d3d9_device.cpp | 64 +++++++++++++++++++++++++++++++---------
+ 1 file changed, 50 insertions(+), 14 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index e280f8a8..4fab4c3c 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -121,7 +121,7 @@ namespace dxvk {
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_shaftfix = 1;
+ 
+   struct VrPsId { IDirect3DPixelShader9* ps; uint32_t fnv; };
+-  static VrPsId  vrPsIds[512];
++  static VrPsId  vrPsIds[2048];
+   static uint32_t vrPsIdN = 0;
+ 
+   static uint32_t VrSm3Fnv(const DWORD* code) {
+@@ -138,6 +138,39 @@ namespace dxvk {
+     return h;
+   }
+ 
++  // save-once census used by the frame map (declared before the draw sites)
++  static uint32_t vrCensusSaved[128];
++  static uint32_t vrCensusSavedN = 0;
++  static void FmCensusPs(IDirect3DPixelShader9* ps, uint32_t fnv) {
++    if (!ps || !fnv) return;
++    for (uint32_t i = 0; i < vrCensusSavedN; i++)
++      if (vrCensusSaved[i] == fnv) return;
++    if (vrCensusSavedN >= 128) return;
++    vrCensusSaved[vrCensusSavedN++] = fnv;
++    UINT sz = 0;
++    if (FAILED(ps->GetFunction(nullptr, &sz)) || !sz || sz >= (1u << 20))
++      return;
++    std::vector<uint8_t> code(sz);
++    if (FAILED(ps->GetFunction(code.data(), &sz))) return;
++    char nm[64];
++    std::snprintf(nm, sizeof(nm), "ps_%08x.dxbc", fnv);
++    std::FILE* f2 = std::fopen(nm, "wb");
++    if (f2) { std::fwrite(code.data(), 1, sz, f2); std::fclose(f2); }
++  }
++
++  static uint32_t VrPsFnvOf(IDirect3DPixelShader9* ps);
++
++  // hex tag for the FM draw line; also feeds the save-once census. Static
++  // buffer is fine: the draw path is device-locked and str::format consumes
++  // the string before the next draw can overwrite it.
++  static const char* FmPsHex(IDirect3DPixelShader9* ps) {
++    static char buf[16];
++    const uint32_t h = VrPsFnvOf(ps);
++    FmCensusPs(ps, h);
++    std::snprintf(buf, sizeof(buf), "%08x", h);
++    return buf;
++  }
++
+   static uint32_t VrPsFnvOf(IDirect3DPixelShader9* ps) {
+     for (uint32_t i = 0; i < vrPsIdN; i++)
+       if (vrPsIds[i].ps == ps) return vrPsIds[i].fnv;
+@@ -3722,7 +3755,7 @@ namespace dxvk {
+                 dpRt ? (int32_t)dpRt->Desc()->Height : -1,
+         " vp=", (int32_t)dpVp.X, ",", (int32_t)dpVp.Y, " ",
+                 (int32_t)dpVp.Width, "x", (int32_t)dpVp.Height,
+-        " fw=", dpFw, " det=", dpDet, " -> ", dpWhy));
++        " fw=", dpFw, " det=", dpDet, " -> ", dpWhy, " ps=", FmPsHex(m_state.pixelShader.ptr())));
+ 
+     if (dpWhy == kDpSplice && dxvk_vr_seq) {
+       stInDup = true;
+@@ -3890,7 +3923,7 @@ namespace dxvk {
+           return t0 != nullptr && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET)
+             ? (int32_t)t0->Desc()->Width : 0;
+         }(),
+-        " -> ", stWhy));
++        " -> ", stWhy, " ps=", FmPsHex(m_state.pixelShader.ptr())));
+ 
+     if (fmActive && !stInDup) {
+       const float* vsf = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
+@@ -4157,7 +4190,7 @@ namespace dxvk {
+                 (int32_t)upSaved.Width, "x", (int32_t)upSaved.Height,
+         " tex0rt=", upSamplesRt ? (int32_t)upT0->Desc()->Width : 0,
+         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]",
+-        " -> ", upWhy));
++        " -> ", upWhy, " ps=", FmPsHex(m_state.pixelShader.ptr())));
+ 
+     if (fmActive && !stInDup) {
+       const float* vsf = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
+@@ -4455,7 +4488,7 @@ namespace dxvk {
+                 (int32_t)upSaved.Width, "x", (int32_t)upSaved.Height,
+         " tex0rt=", upSamplesRt ? (int32_t)upT0->Desc()->Width : 0,
+         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]",
+-        " -> ", upWhy));
++        " -> ", upWhy, " ps=", FmPsHex(m_state.pixelShader.ptr())));
+ 
+     if (fmActive && !stInDup) {
+       const float* vsf = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
+@@ -5365,17 +5398,20 @@ namespace dxvk {
+       pFunction,
+       uint32_t(bytecodeLength)));
+ 
+-    if (vrPsIdN < 512) {
++    // M5.5: hash EVERY pixel shader. The door-light mismatch is some
++    // OTHER screen-space consumer (shadow/light projection); to name it the
++    // frame map now stamps each draw with its ps hash and saves every unique
++    // bytecode, so one Scroll-Lock at the artifact produces a full census to
++    // CTAB-decode offline - the exact method that named the shaft trio.
++    if (vrPsIdN < 2048) {
+       const uint32_t h = VrSm3Fnv(pFunction);
+-      // only the three shaft shaders are worth a slot
+-      if (h == 0x20e07766u || h == 0x5240e25cu || h == 0x70776930u) {
+-        vrPsIds[vrPsIdN].ps  = *ppShader;
+-        vrPsIds[vrPsIdN].fnv = h;
+-        vrPsIdN++;
+-        Logger::info(str::format("VR shaftfix: recognized light-shaft shader ",
+-          vrPsIdN, " (", h == 0x20e07766u ? "downsample" :
++      vrPsIds[vrPsIdN].ps  = *ppShader;
++      vrPsIds[vrPsIdN].fnv = h;
++      vrPsIdN++;
++      if (h == 0x20e07766u || h == 0x5240e25cu || h == 0x70776930u)
++        Logger::info(str::format("VR shaftfix: recognized light-shaft shader (",
++          h == 0x20e07766u ? "downsample" :
+           h == 0x5240e25cu ? "radial blur" : "apply", ")"));
+-      }
+     }
+ 
+     return D3D_OK;
+-- 
+2.43.0
+

@@ -1,0 +1,170 @@
+From f1e6906f7d645be381f3870c43c0d2b8e81b33d6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 27 Aug 2026 20:37:00 +0000
+Subject: [PATCH 48/52] M8.1: splice the det<0 quarter-res light pass per-eye
+ within its region
+
+The 2026-08-28 framedump names it: the additive light shaders draw INSIDE
+the mirrored-vp quarter pass, mono, and the full-screen upsample stretches
+one image across both eyes - light in one eye, hole in the other. Every
+per-draw shear fix missed because these draws were never spliced at all.
+All class members split (lights must depth-test per-eye depth). Marker
+tokens: lightsplit=0 reverts, lightswap=1 swaps eye halves (det<0 X-mirror
+insurance).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
+---
+ src/d3d9/d3d9_device.cpp | 115 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 115 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index b28e28e9..5b2b7e1c 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -130,6 +130,18 @@ namespace dxvk {
+   // the decisive test, and a shippable "reflections off in VR" option.
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_reflect = 1;
+ 
++  // M8.1: THE ARTIFACT'S REAL HOME (framedump 2026-08-28, ps hashes): the
++  // ADDITIVE LIGHT SHADERS themselves draw inside this det<0 quarter-res
++  // pass - mono - and the full-screen upsample stretches that one image
++  // across BOTH eyes (light present in one eye, absent in the other,
++  // angle-dependent). Splice the quarter pass side-by-side within its own
++  // region and the linear upsample lands each half on its own eye.
++  // lightsplit=0 in dxvk_stereo.txt reverts; lightswap=1 swaps the eye
++  // halves (insurance: det<0 may be an X-mirror, which would land each
++  // eye's image in the other eye's half).
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_lightsplit = 1;
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_lightswap  = 0;
++
+   // M6.7: LIVE DRAW-CLASS KILL MASK - the artifact bisector. The proxy
+   // overlay flips bits while the user stares at a broken light; the switch
+   // that makes the artifact vanish names its draw class. Bits:
+@@ -336,6 +348,10 @@ namespace dxvk {
+       dxvk_vr_shadowfix = (uint32_t)std::strtol(t + 10, nullptr, 10);
+     if (const char* t = std::strstr(buf, "reflect="))
+       dxvk_vr_reflect = (uint32_t)std::strtol(t + 8, nullptr, 10);
++    if (const char* t = std::strstr(buf, "lightsplit="))
++      dxvk_vr_lightsplit = (uint32_t)std::strtol(t + 11, nullptr, 10);
++    if (const char* t = std::strstr(buf, "lightswap="))
++      dxvk_vr_lightswap = (uint32_t)std::strtol(t + 10, nullptr, 10);
+     // M4.5: the marker is NOT logged here. M4.4 put a Logger::info in this
+     // lambda and the game stopped loading the DLL entirely - no DXVK log at
+     // all, not even the header, and the proxy could not resolve a single
+@@ -4145,6 +4161,51 @@ namespace dxvk {
+       return D3D_OK;
+     }
+ 
++    // M8.1: quarter-pass splice, DP flavor (see DIP site).
++    if (!std::strcmp(dpWhy, "mirrored-vp") && dxvk_vr_lightsplit != 0 &&
++        !stInDup) {
++      const D3DVIEWPORT9 savedVp = dpVp;
++      stInDup = true;
++      D3DVIEWPORT9 half = savedVp;
++      half.Width = savedVp.Width / 2;
++      float eye[16];
++      const float sepNow  = dxvk_vr_sep;
++      const float convNow = dxvk_vr_conv;
++      const bool mAdd =
++        m_state.renderStates[D3DRS_ALPHABLENDENABLE] != 0 &&
++        m_state.renderStates[D3DRS_DESTBLEND] == D3DBLEND_ONE;
++      const int32_t vpReg = mAdd
++        ? VrPsVpmReg(m_state.pixelShader.ptr()) : -1;
++      float vpmSave[16];
++      if (vpReg >= 0)
++        std::memcpy(vpmSave, reinterpret_cast<const float*>(
++          m_state.psConsts->fConsts) + vpReg * 4, sizeof(vpmSave));
++      for (uint32_t e = 0; e < 2; e++) {
++        float sh = e == 0 ? -sepNow : sepNow;
++        std::memcpy(eye, stVP, sizeof(eye));
++        eye[0]  += sh * eye[3];
++        eye[4]  += sh * eye[7];
++        eye[8]  += sh * eye[11];
++        eye[12] += sh * eye[15] - sh * convNow;
++        const uint32_t right = (e == 1) != (dxvk_vr_lightswap != 0) ? 1 : 0;
++        half.X = savedVp.X + (right ? half.Width : 0);
++        SetViewport(&half);
++        SetVertexShaderConstantF(0, eye, 4);
++        if (vpReg >= 0) {
++          float vpmEye[16];
++          VrVpmShear(vpmSave, sh, convNow, vpmEye);
++          SetPixelShaderConstantF(vpReg, vpmEye, 4);
++        }
++        DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
++      }
++      if (vpReg >= 0) SetPixelShaderConstantF(vpReg, vpmSave, 4);
++      SetVertexShaderConstantF(0, stVP, 4);
++      SetViewport(&savedVp);
++      stInDup = false;
++      stSpliceAccum += 1;
++      return D3D_OK;
++    }
++
+     if (dpWhy == kDpSplice) {
+       stInDup = true;
+       D3DVIEWPORT9 half = dpVp;
+@@ -4434,6 +4495,60 @@ namespace dxvk {
+       return D3D_OK;
+     }
+ 
++    // M8.1: splice the det<0 quarter-res pass (depth prepass + additive
++    // light passes) side-by-side within its own region. See the export
++    // comment. All class members splice - lights must depth-test against
++    // per-eye depth, so the prepass splits with them.
++    if (!std::strcmp(stWhy, "mirrored-vp") && dxvk_vr_lightsplit != 0 &&
++        !stInDup) {
++      const D3DVIEWPORT9 savedVp = stVpS;
++      stInDup = true;
++      D3DVIEWPORT9 half = savedVp;
++      half.Width = savedVp.Width / 2;
++      float eye[16];
++      const float sepNow  = dxvk_vr_sep;
++      const float convNow = dxvk_vr_conv;
++      const bool mAdd =
++        m_state.renderStates[D3DRS_ALPHABLENDENABLE] != 0 &&
++        m_state.renderStates[D3DRS_DESTBLEND] == D3DBLEND_ONE;
++      const int32_t vpReg = mAdd
++        ? VrPsVpmReg(m_state.pixelShader.ptr()) : -1;
++      float vpmSave[16];
++      if (vpReg >= 0)
++        std::memcpy(vpmSave, reinterpret_cast<const float*>(
++          m_state.psConsts->fConsts) + vpReg * 4, sizeof(vpmSave));
++      for (uint32_t e = 0; e < 2; e++) {
++        float sh = e == 0 ? -sepNow : sepNow;
++        std::memcpy(eye, stVP, sizeof(eye));
++        eye[0]  += sh * eye[3];
++        eye[4]  += sh * eye[7];
++        eye[8]  += sh * eye[11];
++        eye[12] += sh * eye[15] - sh * convNow;
++        const uint32_t right = (e == 1) != (dxvk_vr_lightswap != 0) ? 1 : 0;
++        half.X = savedVp.X + (right ? half.Width : 0);
++        SetViewport(&half);
++        SetVertexShaderConstantF(0, eye, 4);
++        if (vpReg >= 0) {
++          float vpmEye[16];
++          VrVpmShear(vpmSave, sh, convNow, vpmEye);
++          SetPixelShaderConstantF(vpReg, vpmEye, 4);
++        }
++        DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
++          MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
++      }
++      if (vpReg >= 0) SetPixelShaderConstantF(vpReg, vpmSave, 4);
++      SetVertexShaderConstantF(0, stVP, 4);
++      SetViewport(&savedVp);
++      stInDup = false;
++      stSpliceAccum += 1;
++      static uint32_t vrM81Told = 0;
++      if (vrM81Told < 1) { vrM81Told++;
++        Logger::info(str::format("VR M8.1: quarter light pass spliced "
++          "per-eye (", savedVp.Width, "x", savedVp.Height, " -> 2x ",
++          half.Width, "x", half.Height, ")")); }
++      return D3D_OK;
++    }
++
+     if (stWhy == kSplice) {
+       {
+         const D3DVIEWPORT9 savedVp = stVpS;
+-- 
+2.43.0
+

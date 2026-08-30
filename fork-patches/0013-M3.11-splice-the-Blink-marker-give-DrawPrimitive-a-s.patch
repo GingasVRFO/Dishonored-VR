@@ -1,0 +1,151 @@
+From 471818925037d3b0bce8de2e965c6774975906da Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 15 Aug 2026 23:55:15 +0000
+Subject: [PATCH 13/52] M3.11: splice the Blink marker; give DrawPrimitive a
+ splice at all
+
+Two escapes appeared only in a frame captured with the Blink marker on
+screen, neither present in the baseline:
+
+  upDIP n=2 nv=4 stride=48 zen=1 zf=4 zw=0 ab=0 tex0rt=1783 -> samples-rt
+  DP    prim=5 n=2                                          -> no gate at all
+
+The first is depth-tested world geometry that samples the scene RT but is
+not alpha-blended, so M3.10's world test (which required blending) sent it
+to mono. Widened to 'blended OR samples a render target', which admits it
+and nothing else measured - the ~234 opaque stride-12 occlusion-query
+boxes per frame are ab=0 AND tex0rt=0 and stay excluded.
+
+The second is worse: DrawPrimitive had no splice code whatsoever. Earlier
+frames contained zero non-indexed draws so it never showed; anything
+routed through it is mono by construction. Given the same gate, verdict
+logging and per-eye replay as DrawIndexedPrimitive.
+
+Being centred in the view, a mono copy lands exactly on the SBS seam and
+is invisible to both eyes - which is why the marker showed at the edges
+and when looking down but never straight ahead.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TTjuQQCoAxMnQBnDkAppgj
+---
+ src/d3d9/d3d9_device.cpp | 84 ++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 81 insertions(+), 3 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 5678bc65..31ab3e64 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3138,9 +3138,71 @@ namespace dxvk {
+     if (unlikely(!PrimitiveCount))
+       return D3D_OK;
+ 
++    // M3.11: DrawPrimitive had NO SPLICE AT ALL. Not a gate that rejected
++    // things - no code. Earlier frames contained zero non-indexed draws so it
++    // never mattered; the frame with a Blink marker in it contains exactly one
++    // (prim=5, n=2 - a two-triangle strip), and anything drawn through here is
++    // mono by construction. Same gate as DrawIndexedPrimitive, same replay.
++    const D3D9CommonTexture* dpRt  = GetCommonTexture(m_state.renderTargets[0].ptr());
++    const D3DVIEWPORT9       dpVp  = m_state.viewport;
++    const float dpFw  = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
++    const float dpDet = StDet3(stVP);
++    static const char* const kDpSplice = "SPLICE";
++    const char* dpWhy = kDpSplice;
++    if      (!stArmed)                  dpWhy = "no-stereo";
++    else if (stInDup)                   dpWhy = "in-dup";
++    else if (ShouldRecord())            dpWhy = "recording";
++    else if (!stHaveVP)                 dpWhy = "no-vp";
++    else if (!(PrimitiveCount > 2
++            || m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE))
++                                        dpWhy = "2tri-nodepth";
++    else if (!(dpFw > 0.5f))            dpWhy = "ortho";
++    else if (!(dpDet > 0.0f))           dpWhy = "mirrored-vp";
++    else if (dpRt == nullptr)           dpWhy = "no-rt";
++    else if (dpRt->Desc()->Width  != dpVp.Width
++          || dpRt->Desc()->Height != dpVp.Height) dpWhy = "vp!=rt";
++    else if (dpVp.X != 0 || dpVp.Y != 0) dpWhy = "vp-offset";
++    else if (dpVp.Width < 1024)          dpWhy = "rt-small";
++    else if (!(dpVp.Width > dpVp.Height)) dpWhy = "rt-portrait";
++
+     if (fmActive)
+       Logger::info(str::format("FM d", fmDraw++, " DP prim=",
+-        (int32_t)PrimitiveType, " n=", PrimitiveCount));
++        (int32_t)PrimitiveType, " n=", PrimitiveCount,
++        " zen=", m_state.renderStates[D3DRS_ZENABLE],
++        " zf=", m_state.renderStates[D3DRS_ZFUNC],
++        " zw=", m_state.renderStates[D3DRS_ZWRITEENABLE],
++        " ab=", m_state.renderStates[D3DRS_ALPHABLENDENABLE],
++        " rt=", dpRt ? (int32_t)dpRt->Desc()->Width : -1, "x",
++                dpRt ? (int32_t)dpRt->Desc()->Height : -1,
++        " vp=", (int32_t)dpVp.X, ",", (int32_t)dpVp.Y, " ",
++                (int32_t)dpVp.Width, "x", (int32_t)dpVp.Height,
++        " fw=", dpFw, " det=", dpDet, " -> ", dpWhy));
++
++    if (dpWhy == kDpSplice) {
++      stInDup = true;
++      D3DVIEWPORT9 half = dpVp;
++      half.Width = dpVp.Width / 2;
++      float eye[16];
++      const float sepNow  = dxvk_vr_sep;
++      const float convNow = dxvk_vr_conv;
++      for (uint32_t e = 0; e < 2; e++) {
++        float sh = e == 0 ? -sepNow : sepNow;
++        std::memcpy(eye, stVP, sizeof(eye));
++        eye[0]  += sh * eye[3];
++        eye[4]  += sh * eye[7];
++        eye[8]  += sh * eye[11];
++        eye[12] += sh * eye[15] - sh * convNow;
++        half.X = e == 0 ? 0 : dpVp.Width - half.Width;
++        SetViewport(&half);
++        SetVertexShaderConstantF(0, eye, 4);
++        DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
++      }
++      stSpliceAccum += 1;
++      SetVertexShaderConstantF(0, stVP, 4);
++      SetViewport(&dpVp);
++      stInDup = false;
++      return D3D_OK;
++    }
+ 
+     bool dynamicSysmemVBOs = false;
+ 
+@@ -3383,9 +3445,17 @@ namespace dxvk {
+     // through c0-c3. Viewport-only duplication - what the UI path does - would
+     // put them at the same place in both eyes at half width. So they get the
+     // full splice treatment, same as DrawIndexedPrimitive.
++    // M3.11: the Blink marker is a depth-tested 2-triangle quad that samples
++    // the scene RT but is NOT alpha-blended (ab=0), so M3.10's world test -
++    // which required blending - dropped it to mono. Being centred in the view,
++    // its single full-width copy landed exactly on the SBS seam and vanished;
++    // off-centre it reappeared in one eye. Same bug as the fire, mirrored.
++    // Widen to "blended OR samples a render target". That admits the marker
++    // and nothing else measured: the ~234 opaque stride-12 boxes per frame
++    // (occlusion-query volumes) are ab=0 AND tex0rt=0, so they stay excluded.
+     const bool upWorldFx =
+          m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
+-      && m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE
++      && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt)
+       && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
+       && stHaveVP
+       && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
+@@ -3541,9 +3611,17 @@ namespace dxvk {
+     // through c0-c3. Viewport-only duplication - what the UI path does - would
+     // put them at the same place in both eyes at half width. So they get the
+     // full splice treatment, same as DrawIndexedPrimitive.
++    // M3.11: the Blink marker is a depth-tested 2-triangle quad that samples
++    // the scene RT but is NOT alpha-blended (ab=0), so M3.10's world test -
++    // which required blending - dropped it to mono. Being centred in the view,
++    // its single full-width copy landed exactly on the SBS seam and vanished;
++    // off-centre it reappeared in one eye. Same bug as the fire, mirrored.
++    // Widen to "blended OR samples a render target". That admits the marker
++    // and nothing else measured: the ~234 opaque stride-12 boxes per frame
++    // (occlusion-query volumes) are ab=0 AND tex0rt=0, so they stay excluded.
+     const bool upWorldFx =
+          m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
+-      && m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE
++      && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt)
+       && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
+       && stHaveVP
+       && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
+-- 
+2.43.0
+

@@ -1,0 +1,244 @@
+From 0a241c87a9bcc7134f3927d690dfa4f8746e7a86 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 24 Aug 2026 05:28:21 +0000
+Subject: [PATCH 34/52] M5.8: recognize the shadow-projection FAMILY by
+ constant-table content
+
+'Works up close, breaks at other distances/angles' = shader variants.
+Any pixel shader whose CTAB declares both ScreenToWorld and
+ScreenToShadowMatrix is a shadow projection; the table names the
+registers, the splice+correction uses them. All three sites (both UP
+paths and the DIP path) now gate on the family, not one hash.
+---
+ src/d3d9/d3d9_device.cpp | 122 ++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 107 insertions(+), 15 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 38219142..7cad35c6 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -162,6 +162,68 @@ namespace dxvk {
+ 
+   static uint32_t VrPsFnvOf(IDirect3DPixelShader9* ps);
+ 
++  // ==== M5.8: recognize the WHOLE shadow-projection family ================
++  // "Works up close, breaks at other distances and angles" is the signature
++  // of shader VARIANTS: UE3 compiles the shadow projection in several
++  // flavours (sample counts, camera inside/outside the volume), and matching
++  // one exact bytecode hash fixes exactly one of them. But the shipped
++  // shaders carry their CTAB constant tables with NAMES - so recognition is
++  // by CONTENT: any pixel shader whose table declares both ScreenToWorld and
++  // ScreenToShadowMatrix is a shadow projection, and the table itself says
++  // which registers those matrices live in.
++  struct VrPsShadowInfo {
++    IDirect3DPixelShader9* ps;
++    uint16_t s2w, s2s;      // float-register indices of the two matrices
++  };
++  static VrPsShadowInfo vrPsShadow[64];
++  static uint32_t vrPsShadowN = 0;
++
++  // parse the D3DXSHADER_CONSTANTTABLE inside the first CTAB comment; return
++  // the float RegisterIndex of `name`, or -1
++  static int32_t VrCtabFindFloat(const DWORD* code, const char* name) {
++    uint32_t n = 1;
++    for (; n < (1u << 18); n++) {
++      const uint32_t t = code[n];
++      if (t == 0x0000FFFFu) break;
++      if ((t & 0xFFFFu) == 0xFFFEu) {
++        const uint32_t len = (t >> 16) & 0x7FFF;
++        const uint8_t* blk = reinterpret_cast<const uint8_t*>(code + n + 1);
++        if (len >= 8 && std::memcmp(blk, "CTAB", 4) == 0) {
++          const uint8_t* ct = blk + 4;
++          const uint32_t ctBytes = len * 4 - 4;
++          if (ctBytes < 28) return -1;
++          const uint32_t ncon  = reinterpret_cast<const uint32_t*>(ct)[3];
++          const uint32_t cinfo = reinterpret_cast<const uint32_t*>(ct)[4];
++          for (uint32_t k = 0; k < ncon && k < 64; k++) {
++            const uint32_t off = cinfo + 20 * k;
++            if (off + 20 > ctBytes) break;
++            const uint32_t nameOff = *reinterpret_cast<const uint32_t*>(ct + off);
++            const uint16_t rset = *reinterpret_cast<const uint16_t*>(ct + off + 4);
++            const uint16_t ridx = *reinterpret_cast<const uint16_t*>(ct + off + 6);
++            if (rset != 2 /* D3DXRS_FLOAT4 */) continue;
++            if (nameOff >= ctBytes) continue;
++            const char* nm = reinterpret_cast<const char*>(ct + nameOff);
++            uint32_t max = ctBytes - nameOff;
++            uint32_t l = 0; while (l < max && nm[l]) l++;
++            if (l < max && std::strcmp(nm, name) == 0) return ridx;
++          }
++          return -1;
++        }
++        n += len;
++      }
++    }
++    return -1;
++  }
++
++  static bool VrPsShadowRegs(IDirect3DPixelShader9* ps,
++                             uint32_t* s2w, uint32_t* s2s) {
++    for (uint32_t i = 0; i < vrPsShadowN; i++)
++      if (vrPsShadow[i].ps == ps) {
++        *s2w = vrPsShadow[i].s2w; *s2s = vrPsShadow[i].s2s; return true;
++      }
++    return false;
++  }
++
+   // hex tag for the FM draw line; also feeds the save-once census. Static
+   // buffer is fine: the draw path is device-locked and str::format consumes
+   // the string before the next draw can overwrite it.
+@@ -4145,13 +4207,16 @@ namespace dxvk {
+         //   c12' = c12 - s*c10     c13' = c13 + s*conv*c10
+         // Derived, not guessed - same s and conv as this draw's vertex shear.
+         float shSave[32];
++        uint32_t dipS2w = 0, dipS2s = 0;
+         const bool shDo = dxvk_vr_shadowfix &&
+           m_state.pixelShader != nullptr &&
+-          VrPsFnvOf(m_state.pixelShader.ptr()) == 0x1923f537u;
+-        if (shDo)
+-          std::memcpy(shSave,
+-            reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 6 * 4,
+-            sizeof(shSave));
++          VrPsShadowRegs(m_state.pixelShader.ptr(), &dipS2w, &dipS2s);
++        if (shDo) {
++          const float* pdc = reinterpret_cast<const float*>(
++            m_state.psConsts->fConsts);
++          std::memcpy(shSave,      pdc + dipS2w * 4, 16 * sizeof(float));
++          std::memcpy(shSave + 16, pdc + dipS2s * 4, 16 * sizeof(float));
++        }
+         for (uint32_t e = 0; e < 2; e++) {
+           float s = e == 0 ? -stSepNow : stSepNow;
+           std::memcpy(eye, stVP, sizeof(eye));
+@@ -4177,7 +4242,8 @@ namespace dxvk {
+               m2[24 + k3] = shSave[24 + k3] - s * shSave[16 + k3];
+               m2[28 + k3] = shSave[28 + k3] + s * stConvNow * shSave[16 + k3];
+             }
+-            SetPixelShaderConstantF(6, m2, 8);
++            SetPixelShaderConstantF(dipS2w, m2, 4);
++            SetPixelShaderConstantF(dipS2s, m2 + 16, 4);
+             static uint32_t vrShadowTold = 0;
+             if (vrShadowTold < 2 && e == 0) { vrShadowTold++;
+               Logger::info("VR shadowfix: modulated-shadow projection "
+@@ -4187,7 +4253,10 @@ namespace dxvk {
+           DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
+             MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
+         }
+-        if (shDo) SetPixelShaderConstantF(6, shSave, 8);
++        if (shDo) {
++          SetPixelShaderConstantF(dipS2w, shSave, 4);
++          SetPixelShaderConstantF(dipS2s, shSave + 16, 4);
++        }
+         if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+         stSpliceAccum += 1;
+         SetVertexShaderConstantF(0, stVP, 4);
+@@ -4466,9 +4535,10 @@ namespace dxvk {
+       // viewports, per-eye c0 shear, per-eye ScreenPositionScaleBias, AND
+       // the M5.6 c6..c13 reconstruction correction - geometry and pixel
+       // math per eye, together or not at all.
++      uint32_t vrS2w = 0, vrS2s = 0;
+       if (dxvk_vr_shadowfix && stArmed && stHaveVP && !stInDup &&
+           m_state.pixelShader != nullptr &&
+-          VrPsFnvOf(m_state.pixelShader.ptr()) == 0x1923f537u) {
++          VrPsShadowRegs(m_state.pixelShader.ptr(), &vrS2w, &vrS2s)) {
+         const D3DVIEWPORT9 savedVp = m_state.viewport;
+         D3DVIEWPORT9 half = savedVp;
+         half.Width = savedVp.Width / 2;
+@@ -4477,7 +4547,8 @@ namespace dxvk {
+         const float* pcs = reinterpret_cast<const float*>(
+           m_state.psConsts->fConsts);
+         const bool uvDo = StUvGrab(pcs + 4, uvS);
+-        std::memcpy(shSave, pcs + 24, sizeof(shSave));   // c6..c13
++        std::memcpy(shSave,      pcs + vrS2w * 4, 16 * sizeof(float));
++        std::memcpy(shSave + 16, pcs + vrS2s * 4, 16 * sizeof(float));
+         stInDup = true;
+         for (uint32_t e = 0; e < 2; e++) {
+           const float sh2 = e == 0 ? -sepNow : sepNow;
+@@ -4497,16 +4568,19 @@ namespace dxvk {
+           float m2[32];
+           std::memcpy(m2, shSave, sizeof(m2));
+           for (int k3 = 0; k3 < 4; k3++) {
++            // columns: reg0=x, reg2=z, reg3=translation, per matrix
+             m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
+             m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
+             m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
+             m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
+           }
+-          SetPixelShaderConstantF(6, m2, 8);
++          SetPixelShaderConstantF(vrS2w, m2, 4);
++          SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
+           DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
+-        SetPixelShaderConstantF(6, shSave, 8);
++        SetPixelShaderConstantF(vrS2w, shSave, 4);
++        SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
+         if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
+         SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&savedVp);
+@@ -4843,9 +4917,10 @@ namespace dxvk {
+       // viewports, per-eye c0 shear, per-eye ScreenPositionScaleBias, AND
+       // the M5.6 c6..c13 reconstruction correction - geometry and pixel
+       // math per eye, together or not at all.
++      uint32_t vrS2w = 0, vrS2s = 0;
+       if (dxvk_vr_shadowfix && stArmed && stHaveVP && !stInDup &&
+           m_state.pixelShader != nullptr &&
+-          VrPsFnvOf(m_state.pixelShader.ptr()) == 0x1923f537u) {
++          VrPsShadowRegs(m_state.pixelShader.ptr(), &vrS2w, &vrS2s)) {
+         const D3DVIEWPORT9 savedVp = m_state.viewport;
+         D3DVIEWPORT9 half = savedVp;
+         half.Width = savedVp.Width / 2;
+@@ -4854,7 +4929,8 @@ namespace dxvk {
+         const float* pcs = reinterpret_cast<const float*>(
+           m_state.psConsts->fConsts);
+         const bool uvDo = StUvGrab(pcs + 4, uvS);
+-        std::memcpy(shSave, pcs + 24, sizeof(shSave));   // c6..c13
++        std::memcpy(shSave,      pcs + vrS2w * 4, 16 * sizeof(float));
++        std::memcpy(shSave + 16, pcs + vrS2s * 4, 16 * sizeof(float));
+         stInDup = true;
+         for (uint32_t e = 0; e < 2; e++) {
+           const float sh2 = e == 0 ? -sepNow : sepNow;
+@@ -4874,17 +4950,20 @@ namespace dxvk {
+           float m2[32];
+           std::memcpy(m2, shSave, sizeof(m2));
+           for (int k3 = 0; k3 < 4; k3++) {
++            // columns: reg0=x, reg2=z, reg3=translation, per matrix
+             m2[8  + k3] = shSave[8  + k3] - sh2 * shSave[0  + k3];
+             m2[12 + k3] = shSave[12 + k3] + sh2 * convNow * shSave[0  + k3];
+             m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
+             m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
+           }
+-          SetPixelShaderConstantF(6, m2, 8);
++          SetPixelShaderConstantF(vrS2w, m2, 4);
++          SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
+           DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+             PrimitiveCount, pIndexData, IndexDataFormat,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
+-        SetPixelShaderConstantF(6, shSave, 8);
++        SetPixelShaderConstantF(vrS2w, shSave, 4);
++        SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
+         if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
+         SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&savedVp);
+@@ -5722,6 +5801,19 @@ namespace dxvk {
+       vrPsIds[vrPsIdN].ps  = *ppShader;
+       vrPsIds[vrPsIdN].fnv = h;
+       vrPsIdN++;
++      // M5.8: family recognition by constant-table content
++      const int32_t rw = VrCtabFindFloat(pFunction, "ScreenToWorld");
++      const int32_t rs2 = VrCtabFindFloat(pFunction, "ScreenToShadowMatrix");
++      if (rw >= 0 && rs2 >= 0 && vrPsShadowN < 64) {
++        vrPsShadow[vrPsShadowN].ps  = *ppShader;
++        vrPsShadow[vrPsShadowN].s2w = (uint16_t)rw;
++        vrPsShadow[vrPsShadowN].s2s = (uint16_t)rs2;
++        vrPsShadowN++;
++        char hx2[16]; std::snprintf(hx2, sizeof(hx2), "%08x", h);
++        Logger::info(str::format("VR shadowfix: shadow-projection variant ",
++          vrPsShadowN, " recognized (ps ", hx2, ", ScreenToWorld c", rw,
++          ", ScreenToShadow c", rs2, ")"));
++      }
+       if (h == 0x20e07766u || h == 0x5240e25cu || h == 0x70776930u)
+         Logger::info(str::format("VR shaftfix: recognized light-shaft shader (",
+           h == 0x20e07766u ? "downsample" :
+-- 
+2.43.0
+

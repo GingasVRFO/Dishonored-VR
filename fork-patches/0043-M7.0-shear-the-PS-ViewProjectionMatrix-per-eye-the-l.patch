@@ -1,0 +1,123 @@
+From 352ed8ab1dfdf60f9020d464cff72e9cfde77598 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 27 Aug 2026 04:03:23 +0000
+Subject: [PATCH 43/52] M7.0: shear the PS ViewProjectionMatrix per eye - the
+ light passes re-project world pos in the PIXEL shader for their attenuation
+ uv (measured in ps_bb3e655b disassembly)
+
+---
+ src/d3d9/d3d9_device.cpp | 53 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 28849773..d63397f4 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -493,6 +493,28 @@ namespace dxvk {
+       " prims=", prims, " bytes=", sz, " saved ", nm));
+   }
+ 
++  // M7.0: THE LIGHT-PASS ROOT CAUSE, from ps_bb3e655b's disassembly: the
++  // per-light additive shaders re-project the pixel's WORLD position with a
++  // ViewProjectionMatrix held in PS constants (CTAB names it; c6-c9 in the
++  // pub variants) to build their LightAttenuationTexture uv. We shear the
++  // VS matrix per eye but this PS copy stayed MONO, so the attenuation
++  // lookup missed by exactly the eye shear - light in one eye, wrong in the
++  // other. Fix: shear the PS matrix per eye with the SAME formula
++  // (col.x += s*col.w per register; translation .x also -= s*conv).
++  static struct { IDirect3DPixelShader9* ps; int16_t reg; } vrPsVpm[1024];
++  static uint32_t vrPsVpmN = 0;
++  static int32_t VrPsVpmReg(IDirect3DPixelShader9* ps) {
++    if (ps != nullptr)
++      for (uint32_t i = 0; i < vrPsVpmN; i++)
++        if (vrPsVpm[i].ps == ps) return vrPsVpm[i].reg;
++    return -1;
++  }
++  static void VrVpmShear(const float* save, float s, float conv, float* out) {
++    std::memcpy(out, save, 16 * sizeof(float));
++    for (int q = 0; q < 4; q++) out[q * 4 + 0] += s * out[q * 4 + 3];
++    out[12] -= s * conv;      // the translation register's constant term
++  }
++
+   static bool StUvGrab(const float* psc1, float* out) {
+     if (!dxvk_vr_uvfix) return false;
+     if (std::fabs(psc1[0] - 0.5f) > 0.02f) return false;
+@@ -4129,6 +4151,11 @@ namespace dxvk {
+       const bool uvDo = StUvGrab(
+         reinterpret_cast<const float*>(m_state.psConsts->fConsts) + uvReg * 4,
+         uvSave);
++      const int32_t vpReg = VrPsVpmReg(m_state.pixelShader.ptr());   // M7.0
++      float vpmSave[16];
++      if (vpReg >= 0)
++        std::memcpy(vpmSave, reinterpret_cast<const float*>(
++          m_state.psConsts->fConsts) + vpReg * 4, sizeof(vpmSave));
+       for (uint32_t e = 0; e < 2; e++) {
+         float sh = e == 0 ? -sepNow : sepNow;
+         std::memcpy(eye, stVP, sizeof(eye));
+@@ -4144,9 +4171,15 @@ namespace dxvk {
+           StUvForEye(uvSave, dpVp.Width, half.X, half.Width, uvEye);
+           SetPixelShaderConstantF(uvReg, uvEye, 1);
+         }
++        if (vpReg >= 0) {                                            // M7.0
++          float vpmEye[16];
++          VrVpmShear(vpmSave, sh, convNow, vpmEye);
++          SetPixelShaderConstantF(vpReg, vpmEye, 4);
++        }
+         DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
+       }
+       if (uvDo) SetPixelShaderConstantF(uvReg, uvSave, 1);
++      if (vpReg >= 0) SetPixelShaderConstantF(vpReg, vpmSave, 4);    // M7.0
+       stSpliceAccum += 1;
+       SetVertexShaderConstantF(0, stVP, 4);
+       SetViewport(&dpVp);
+@@ -4394,6 +4427,11 @@ namespace dxvk {
+           m_state.renderStates[D3DRS_SRCBLEND],
+           m_state.renderStates[D3DRS_DESTBLEND],
+           uvReg, uvDo, PrimitiveCount);
++        const int32_t vpReg = VrPsVpmReg(m_state.pixelShader.ptr()); // M7.0
++        float vpmSave[16];
++        if (vpReg >= 0)
++          std::memcpy(vpmSave, reinterpret_cast<const float*>(
++            m_state.psConsts->fConsts) + vpReg * 4, sizeof(vpmSave));
+         // ==== M5.6: per-eye SHADOW PROJECTION =============================
+         // ps 1923f537 (census + CTAB): the modulated-shadow pass. It rebuilds
+         // world position from (screenX*z, screenY*z, z) through ScreenToWorld
+@@ -4438,6 +4476,11 @@ namespace dxvk {
+             StUvForEye(uvSave, savedVp.Width, half.X, half.Width, uvEye);
+             SetPixelShaderConstantF(uvReg, uvEye, 1);
+           }
++          if (vpReg >= 0) {                                          // M7.0
++            float vpmEye[16];
++            VrVpmShear(vpmSave, s, stConvNow, vpmEye);
++            SetPixelShaderConstantF(vpReg, vpmEye, 4);
++          }
+           if (shDo) {
+             const bool dHasW = dipS2w != 0xffffu;
+             float m2[32];
+@@ -4466,6 +4509,7 @@ namespace dxvk {
+           if (dipS2w != 0xffffu) SetPixelShaderConstantF(dipS2w, shSave, 4);
+           SetPixelShaderConstantF(dipS2s, shSave + 16, 4);
+         }
++        if (vpReg >= 0) SetPixelShaderConstantF(vpReg, vpmSave, 4);  // M7.0
+         if (uvDo) SetPixelShaderConstantF(uvReg, uvSave, 1);
+         stSpliceAccum += 1;
+         SetVertexShaderConstantF(0, stVP, 4);
+@@ -6105,6 +6149,15 @@ namespace dxvk {
+       // one matrix there.
+       const int32_t rw = VrCtabFindFloat(pFunction, "ScreenToWorld");
+       const int32_t rs2 = VrCtabFindFloat(pFunction, "ScreenToShadowMatrix");
++      // M7.0: remember where this shader keeps its PS ViewProjectionMatrix
++      {
++        const int32_t rvp = VrCtabFindFloat(pFunction, "ViewProjectionMatrix");
++        if (rvp >= 0 && vrPsVpmN < 1024) {
++          vrPsVpm[vrPsVpmN].ps  = *ppShader;
++          vrPsVpm[vrPsVpmN].reg = (int16_t)rvp;
++          vrPsVpmN++;
++        }
++      }
+       // M6.8: remember where this shader keeps ScreenPositionScaleBias
+       {
+         const int32_t rsp = VrCtabFindFloat(pFunction,
+-- 
+2.43.0
+

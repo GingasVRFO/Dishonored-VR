@@ -1,0 +1,118 @@
+From 031d21965d19d88fbea97a22fceb39f9949bf3c5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 09:28:34 +0000
+Subject: [PATCH 05/52] M3.3: depth-test state replaces c6 heuristic for
+ splice/UI gating
+
+ZENABLE is authoritative: screen-space resolve/post copies never depth-
+test, world geometry always does. The M3.2 c6-identity test shredded
+frames when post quads carried a stale non-identity c6 (scene copies got
+spliced and compounded through the post chain). UI duplication likewise
+now requires depth-test OFF so in-scene UP sprites are not plain-duped.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014cV1zHyR67U6acb84LoxAc
+---
+ src/d3d9/d3d9_device.cpp | 56 +++++++++++++++++-----------------------
+ 1 file changed, 24 insertions(+), 32 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 6b4a1ac2..1c008122 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -85,24 +85,10 @@ namespace dxvk {
+   static bool  stHaveVP = false;
+   static bool  stInDup  = false;
+ 
+-  // M3.2: last per-draw LocalToWorld (c6-c9, count==4 uploads only - larger
+-  // counts at c6 are skinned bone rows). Distinguishes WORLD quads (glass
+-  // panes, decals: real transform, must be spliced - unspliced they render
+-  // full-frame and land as phantoms in one eye) from SCREEN-SPACE quads
+-  // (post/resolve: identity transform, must stay mono - splicing them
+-  // squeezes the full frame into each half). Measured in framemap run 2:
+-  // every escaped-mono draw was a 4-vertex quad, and post quads are
+-  // preceded by an identity c6 upload.
+-  static float stC6[16] = {};
+-  static bool  stHaveC6 = false;
+-  static inline bool StC6Identity() {
+-    for (uint32_t i = 0; i < 16; i++) {
+-      float want = (i % 5 == 0) ? 1.0f : 0.0f;
+-      if (std::fabs(stC6[i] - want) > 1e-4f)
+-        return false;
+-    }
+-    return true;
+-  }
++  // M3.3: world-vs-screen-space discrimination is by depth-test state
++  // (D3DRS_ZENABLE), read directly in the draw gates below. The M3.2
++  // c6-identity heuristic shredded frames when post quads carried a stale
++  // non-identity c6.
+ 
+   // M3.1: per-frame spliced-draw count, exported so the VR proxy (the d3d9
+   // shim that chain-loads this dll) can tell stereo frames from flat ones
+@@ -3202,13 +3188,18 @@ namespace dxvk {
+     //  - the bound RT0 is large landscape and the viewport covers all of it
+     //    (excludes shadow passes, bloom/LUT tiles, the 800x800 light tile),
+     //  - the draw is real geometry: more than 2 primitives, OR a small quad
+-    //    with a non-identity LocalToWorld (world-placed glass/decals - these
+-    //    MUST be spliced or they render full-frame and phantom in one eye).
+-    //    Identity-c6 quads are screen-space resolve/post copies and stay
+-    //    mono - they are per-pixel copies, so they preserve the SBS layout,
++    //    drawn with depth testing ON (world-placed glass/decals - these MUST
++    //    be spliced or they render full-frame and phantom in one eye).
++    //    Depth-test-OFF quads are screen-space resolve/post copies and stay
++    //    mono - they are per-pixel copies, so they preserve the SBS layout.
++    //    (The M3.2 c6-identity test was wrong: post quads can carry a stale
++    //    non-identity c6, and splicing a scene copy compounds through the
++    //    post chain into total frame shredding. ZENABLE is authoritative:
++    //    screen-space copies never depth-test, world geometry always does.)
+     //  - no state block is recording.
+     if (stArmed && !stInDup && stHaveVP
+-     && (PrimitiveCount > 2 || (stHaveC6 && !StC6Identity()))
++     && (PrimitiveCount > 2
++      || m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE)
+      && !ShouldRecord()) {
+       float fw = std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11]);
+       const D3D9CommonTexture* stRt = GetCommonTexture(m_state.renderTargets[0].ptr());
+@@ -3324,8 +3315,12 @@ namespace dxvk {
+     // through the *UP paths with shader-transformed vertices (posT=0,
+     // measured), so the viewport transform applies - replaying the draw into
+     // each half viewport puts the HUD in both eyes at screen depth. No
+-    // constant changes: UI transforms don't live in c0-c3.
+-    if (stArmed && !stInDup && !ShouldRecord()) {
++    // constant changes: UI transforms don't live in c0-c3. M3.3: only for
++    // depth-test-OFF draws - anything depth-tested through UP is scene
++    // content (sprites/particles) and must not be plain-duplicated.
++    if (stArmed && !stInDup
++     && m_state.renderStates[D3DRS_ZENABLE] == D3DZB_FALSE
++     && !ShouldRecord()) {
+       const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+       const D3DVIEWPORT9 upSaved = m_state.viewport;
+       if (upRt2 != nullptr
+@@ -3418,7 +3413,10 @@ namespace dxvk {
+     }
+ 
+     // M3.2: HUD/UI both-eyes duplication (see DrawPrimitiveUP).
+-    if (stArmed && !stInDup && !ShouldRecord()) {
++    // M3.3: depth-test-OFF only.
++    if (stArmed && !stInDup
++     && m_state.renderStates[D3DRS_ZENABLE] == D3DZB_FALSE
++     && !ShouldRecord()) {
+       const D3D9CommonTexture* upRt2 = GetCommonTexture(m_state.renderTargets[0].ptr());
+       const D3DVIEWPORT9 upSaved = m_state.viewport;
+       if (upRt2 != nullptr
+@@ -3862,12 +3860,6 @@ namespace dxvk {
+       stHaveVP = true;
+     }
+ 
+-    // M3.2: capture the per-draw LocalToWorld (c6, exactly 4 registers).
+-    if (stArmed && !stInDup && StartRegister == 6
+-     && Vector4fCount == 4 && pConstantData != nullptr) {
+-      std::memcpy(stC6, pConstantData, 16 * sizeof(float));
+-      stHaveC6 = true;
+-    }
+ 
+     return SetShaderConstants<
+       D3D9ShaderType::VertexShader,
+-- 
+2.43.0
+

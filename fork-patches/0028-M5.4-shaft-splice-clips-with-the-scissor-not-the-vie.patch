@@ -1,0 +1,102 @@
+From 6149320089e0b629f51f1d4aeb6bd262b1554895 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 24 Aug 2026 04:47:15 +0000
+Subject: [PATCH 28/52] M5.4: shaft splice clips with the scissor, not the
+ viewport
+
+A viewport does not clip a fullscreen quad - it remaps it, squeezing the
+whole side-by-side pair into each half (four-panel frame). The scissor
+discards pixels without touching the mapping: full-size quad, per-eye
+origin and clamp constants, each surviving pixel samples its own 1:1
+source position.
+---
+ src/d3d9/d3d9_device.cpp | 46 +++++++++++++++++++++++++++++++---------
+ 1 file changed, 36 insertions(+), 10 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 4e5abb87..e280f8a8 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4227,13 +4227,25 @@ namespace dxvk {
+           float o0[4], uv0[4];
+           std::memcpy(o0, pc + 0, 16);
+           if (uvReg >= 0) std::memcpy(uv0, pc + uvReg * 4, 16);
++          // M5.4: SCISSOR, not viewport. A viewport does not clip a
++          // fullscreen quad - it REMAPS it, squeezing the whole pair into
++          // each half (the four-panel frame the first test produced). The
++          // scissor discards pixels without touching the mapping, so each
++          // surviving pixel keeps its 1:1 source position and only the
++          // origin/clamp constants differ per eye.
+           const D3DVIEWPORT9 sv = m_state.viewport;
+-          D3DVIEWPORT9 hv = sv;
+-          hv.Width = sv.Width / 2;
++          const RECT  savedSc   = m_state.scissorRect;
++          const DWORD savedScEn = m_state.renderStates[D3DRS_SCISSORTESTENABLE];
++          SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+           stInDup = true;
+           for (uint32_t e = 0; e < 2; e++) {
+-            hv.X = e == 0 ? sv.X : sv.X + hv.Width;
+-            SetViewport(&hv);
++            RECT rc;
++            rc.left   = (LONG)sv.X + (e == 0 ? 0 : (LONG)(sv.Width / 2));
++            rc.top    = (LONG)sv.Y;
++            rc.right  = (LONG)sv.X + (e == 0 ? (LONG)(sv.Width / 2)
++                                             : (LONG)sv.Width);
++            rc.bottom = (LONG)(sv.Y + sv.Height);
++            SetScissorRect(&rc);
+             // origin: mono [0,1] across the pair -> the same point within
+             // this eye's half of the pair
+             float oc[4] = { e == 0 ? o0[0] * 0.5f : 0.5f + o0[0] * 0.5f,
+@@ -4252,7 +4264,8 @@ namespace dxvk {
+           }
+           SetPixelShaderConstantF(0, o0, 1);
+           if (uvReg >= 0) SetPixelShaderConstantF(uvReg, uv0, 1);
+-          SetViewport(&sv);
++          SetScissorRect(&savedSc);
++          SetRenderState(D3DRS_SCISSORTESTENABLE, savedScEn);
+           stInDup = false;
+           stSpliceAccum += 1;
+           static uint32_t vrShaftTold = 0;
+@@ -4507,13 +4520,25 @@ namespace dxvk {
+           float o0[4], uv0[4];
+           std::memcpy(o0, pc + 0, 16);
+           if (uvReg >= 0) std::memcpy(uv0, pc + uvReg * 4, 16);
++          // M5.4: SCISSOR, not viewport. A viewport does not clip a
++          // fullscreen quad - it REMAPS it, squeezing the whole pair into
++          // each half (the four-panel frame the first test produced). The
++          // scissor discards pixels without touching the mapping, so each
++          // surviving pixel keeps its 1:1 source position and only the
++          // origin/clamp constants differ per eye.
+           const D3DVIEWPORT9 sv = m_state.viewport;
+-          D3DVIEWPORT9 hv = sv;
+-          hv.Width = sv.Width / 2;
++          const RECT  savedSc   = m_state.scissorRect;
++          const DWORD savedScEn = m_state.renderStates[D3DRS_SCISSORTESTENABLE];
++          SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+           stInDup = true;
+           for (uint32_t e = 0; e < 2; e++) {
+-            hv.X = e == 0 ? sv.X : sv.X + hv.Width;
+-            SetViewport(&hv);
++            RECT rc;
++            rc.left   = (LONG)sv.X + (e == 0 ? 0 : (LONG)(sv.Width / 2));
++            rc.top    = (LONG)sv.Y;
++            rc.right  = (LONG)sv.X + (e == 0 ? (LONG)(sv.Width / 2)
++                                             : (LONG)sv.Width);
++            rc.bottom = (LONG)(sv.Y + sv.Height);
++            SetScissorRect(&rc);
+             // origin: mono [0,1] across the pair -> the same point within
+             // this eye's half of the pair
+             float oc[4] = { e == 0 ? o0[0] * 0.5f : 0.5f + o0[0] * 0.5f,
+@@ -4533,7 +4558,8 @@ namespace dxvk {
+           }
+           SetPixelShaderConstantF(0, o0, 1);
+           if (uvReg >= 0) SetPixelShaderConstantF(uvReg, uv0, 1);
+-          SetViewport(&sv);
++          SetScissorRect(&savedSc);
++          SetRenderState(D3DRS_SCISSORTESTENABLE, savedScEn);
+           stInDup = false;
+           stSpliceAccum += 1;
+           static uint32_t vrShaftTold = 0;
+-- 
+2.43.0
+

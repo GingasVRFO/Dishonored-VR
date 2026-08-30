@@ -1,0 +1,146 @@
+From aece7f6ee6de759f68d10bf744af74c15e47d346 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 25 Aug 2026 00:00:43 +0000
+Subject: [PATCH 30/52] M6.0: wrist HUD - redirect UI (kUpDup) draws to an
+ exported HUD texture
+
+---
+ src/d3d9/d3d9_device.cpp | 94 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 4fab4c3c..a83f10c9 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -439,6 +439,68 @@ namespace dxvk {
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_splices = 0;
+   static uint32_t stSpliceAccum = 0;
+ 
++  // M6.0: WRIST HUD. When the proxy sets dxvk_vr_hudwrist, every UI draw
++  // (the kUpDup class - fonts/shapes on the full-size RT, tex0 not a render
++  // target) is REDIRECTED: drawn once into a dedicated HUD texture instead
++  // of duplicated into both backbuffer halves. The proxy reads the texture
++  // through dxvk_vr_hudtex and composites it as a controller-anchored panel.
++  // The proxy zeroes the flag in menus, so menu screens still draw in-view.
++  // The HUD RT is cleared to black once per frame; the proxy composites the
++  // panel additively, so black = invisible.
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_hudwrist = 0;
++  extern "C" __declspec(dllexport) IDirect3DTexture9* volatile dxvk_vr_hudtex = nullptr;
++  static IDirect3DTexture9* vrHudTex     = nullptr;
++  static IDirect3DSurface9* vrHudSurf    = nullptr;
++  static uint32_t           vrHudFrameNo = 0;    // ++ in PresentEx
++  static uint32_t           vrHudCleared = 0xffffffffu;
++  static bool               vrHudBusy    = false;
++
++  static void VrHudRelease() {
++    dxvk_vr_hudtex = nullptr;
++    if (vrHudSurf) { vrHudSurf->Release(); vrHudSurf = nullptr; }
++    if (vrHudTex)  { vrHudTex->Release();  vrHudTex  = nullptr; }
++  }
++
++  // Redirect one UI draw into the HUD RT. Returns true when the caller must
++  // consume the draw (it has been issued); false = fall through to the
++  // normal path. The caller sets stInDup around this so the re-entrant draw
++  // classifies as in-dup and renders plainly to whatever RT is current.
++  template<typename DrawFn>
++  static bool VrHudRedirect(D3D9DeviceEx* dev, const D3DVIEWPORT9& upSaved,
++                            DrawFn&& draw) {
++    if (vrHudTex == nullptr) {
++      if (vrHudBusy) return false;
++      vrHudBusy = true;
++      IDirect3DTexture9* t = nullptr;
++      HRESULT hr = dev->CreateTexture(upSaved.Width, upSaved.Height, 1,
++        D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &t, nullptr);
++      vrHudBusy = false;
++      if (FAILED(hr) || t == nullptr) {
++        Logger::info("VR hud: RT create FAILED - wrist redirect disabled");
++        dxvk_vr_hudwrist = 0;
++        return false;
++      }
++      t->GetSurfaceLevel(0, &vrHudSurf);
++      vrHudTex = t;
++      dxvk_vr_hudtex = t;
++      Logger::info(str::format("VR hud: RT ", upSaved.Width, "x",
++        upSaved.Height, " created for wrist redirect"));
++    }
++    if (vrHudSurf == nullptr) return false;
++    IDirect3DSurface9* saved = nullptr;
++    dev->GetRenderTarget(0, &saved);
++    dev->SetRenderTarget(0, vrHudSurf);
++    if (vrHudCleared != vrHudFrameNo) {
++      vrHudCleared = vrHudFrameNo;
++      dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0),
++                 0.f, 0);
++    }
++    draw();
++    dev->SetRenderTarget(0, saved);
++    if (saved) saved->Release();
++    return true;
++  }
++
+   // M3.6: live projection scales of the main-camera VP (xs, ys - the norms of
+   // clip-x/clip-y columns). The proxy reads these to size its presentation
+   // quads from the FOV the game is ACTUALLY rendering this frame, instead of
+@@ -928,6 +990,7 @@ namespace dxvk {
+     D3D9DeviceLock lock = LockDevice();
+ 
+     Logger::info("Device reset");
++    VrHudRelease();   // M6.0: POOL_DEFAULT HUD RT must not survive a Reset
+     m_deviceLostState = D3D9DeviceLostState::Ok;
+ 
+     HRESULT hr;
+@@ -4322,6 +4385,21 @@ namespace dxvk {
+         stSpliceAccum += 1;
+         return D3D_OK;
+       }
++      // M6.0: wrist HUD - a UI draw leaves the frame entirely; drawn once
++      // into the HUD texture the proxy panels onto the wrist.
++      if (!dxvk_vr_seq && dxvk_vr_hudwrist && upWhy == kUpDup) {
++        stInDup = true;
++        const bool hudDid = VrHudRedirect(this, upSaved, [&] {
++          DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
++            pVertexStreamZeroData, VertexStreamZeroStride);
++        });
++        stInDup = false;
++        if (hudDid) {
++          SetViewport(&upSaved);   // SetRenderTarget reset it to full RT
++          stSpliceAccum += 1;      // keep the proxy's gameplay heuristic fed
++          return D3D_OK;
++        }
++      }
+       if (!dxvk_vr_seq && (upWhy == kUpDup || upWhy == kUpSplice)) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+@@ -4614,6 +4692,21 @@ namespace dxvk {
+         stSpliceAccum += 1;
+         return D3D_OK;
+       }
++      // M6.0: wrist HUD - same redirect as the DrawPrimitiveUP site.
++      if (!dxvk_vr_seq && dxvk_vr_hudwrist && upWhy == kUpDup) {
++        stInDup = true;
++        const bool hudDid = VrHudRedirect(this, upSaved, [&] {
++          DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
++            PrimitiveCount, pIndexData, IndexDataFormat,
++            pVertexStreamZeroData, VertexStreamZeroStride);
++        });
++        stInDup = false;
++        if (hudDid) {
++          SetViewport(&upSaved);
++          stSpliceAccum += 1;
++          return D3D_OK;
++        }
++      }
+       if (!dxvk_vr_seq && (upWhy == kUpDup || upWhy == kUpSplice)) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+@@ -5756,6 +5849,7 @@ namespace dxvk {
+     // M3.1: publish the finished frame's spliced-draw count for the proxy.
+     dxvk_vr_splices = stSpliceAccum;
+     stSpliceAccum = 0;
++    vrHudFrameNo += 1;   // M6.0: lets the HUD RT clear once per frame
+ 
+     // M3.8: an on-demand request arms the dump machinery even when the
+     // dxvk_framemap.txt marker is absent - the proxy asking for a frame IS
+-- 
+2.43.0
+

@@ -1,0 +1,152 @@
+From 3415ebd9ab7d19f1e8a9f3d83a4ba88e6990ba70 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 25 Aug 2026 00:25:34 +0000
+Subject: [PATCH 31/52] M6.1: wrist-HUD redirect census + hudskip exclusion
+ list
+
+---
+ src/d3d9/d3d9_device.cpp | 98 +++++++++++++++++++++++++++++++---------
+ 1 file changed, 77 insertions(+), 21 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index a83f10c9..ebb37139 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -180,6 +180,14 @@ namespace dxvk {
+ 
+   extern "C" __declspec(dllexport) volatile float    dxvk_vr_eyesign = 0.0f;
+ 
++  // M6.1: pixel shaders excluded from the wrist-HUD redirect, from
++  // "hudskip=aabbccdd,..." in dxvk_stereo.txt (up to 8, hex FNVs). A UI-class
++  // draw whose shader is listed here draws IN VIEW (normal both-eyes dup)
++  // instead of moving to the wrist texture - the lever for world-anchored UI
++  // like quest markers once its shader hash is known from the redirect
++  // census. Parsed in the marker lambda below (static init - NO logging).
++  static uint32_t vrHudSkip[8];
++  static uint32_t vrHudSkipN = 0;
+ 
+   static bool  stArmed = [] {
+     std::FILE* f = std::fopen("dxvk_stereo.txt", "r");
+@@ -207,6 +215,17 @@ namespace dxvk {
+       dxvk_vr_seq = (uint32_t)std::strtol(t + 4, nullptr, 10);
+     if (const char* t = std::strstr(buf, "shaftfix="))
+       dxvk_vr_shaftfix = (uint32_t)std::strtol(t + 9, nullptr, 10);
++    if (const char* t = std::strstr(buf, "hudskip=")) {
++      const char* p = t + 8;
++      while (vrHudSkipN < 8) {
++        char* end = nullptr;
++        unsigned long v = std::strtoul(p, &end, 16);
++        if (end == p) break;
++        vrHudSkip[vrHudSkipN++] = (uint32_t)v;
++        if (*end != ',') break;
++        p = end + 1;
++      }
++    }
+     // M4.5: the marker is NOT logged here. M4.4 put a Logger::info in this
+     // lambda and the game stopped loading the DLL entirely - no DXVK log at
+     // all, not even the header, and the proxy could not resolve a single
+@@ -461,6 +480,30 @@ namespace dxvk {
+     if (vrHudTex)  { vrHudTex->Release();  vrHudTex  = nullptr; }
+   }
+ 
++  // M6.1: is this UI shader excluded from the redirect?
++  static bool VrHudSkipPs(uint32_t ps) {
++    for (uint32_t i = 0; i < vrHudSkipN; i++)
++      if (vrHudSkip[i] == ps) return true;
++    return false;
++  }
++
++  // M6.1: redirect census - each distinct pixel shader that passes through
++  // the wrist redirect is logged ONCE per launch, so a wrongly-captured
++  // element (quest markers, world imposters) can be identified by hash and
++  // excluded via hudskip= without a rebuild.
++  static void VrHudCensus(uint32_t ps, uint32_t prims) {
++    static uint32_t seen[32];
++    static uint32_t seenN = 0;
++    for (uint32_t i = 0; i < seenN; i++)
++      if (seen[i] == ps) return;
++    if (seenN >= 32) return;
++    seen[seenN++] = ps;
++    char hx[16];
++    std::snprintf(hx, sizeof(hx), "%08x", ps);
++    Logger::info(str::format("VR hud: redirect class ps=", hx,
++                             " prims=", prims));
++  }
++
+   // Redirect one UI draw into the HUD RT. Returns true when the caller must
+   // consume the draw (it has been issued); false = fall through to the
+   // normal path. The caller sets stInDup around this so the re-entrant draw
+@@ -4387,17 +4430,24 @@ namespace dxvk {
+       }
+       // M6.0: wrist HUD - a UI draw leaves the frame entirely; drawn once
+       // into the HUD texture the proxy panels onto the wrist.
++      // M6.1: unless its shader is on the hudskip list - then it draws in
++      // view as before (quest markers, anything world-anchored).
+       if (!dxvk_vr_seq && dxvk_vr_hudwrist && upWhy == kUpDup) {
+-        stInDup = true;
+-        const bool hudDid = VrHudRedirect(this, upSaved, [&] {
+-          DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+-            pVertexStreamZeroData, VertexStreamZeroStride);
+-        });
+-        stInDup = false;
+-        if (hudDid) {
+-          SetViewport(&upSaved);   // SetRenderTarget reset it to full RT
+-          stSpliceAccum += 1;      // keep the proxy's gameplay heuristic fed
+-          return D3D_OK;
++        const uint32_t hudPs = m_state.pixelShader != nullptr
++                             ? VrPsFnvOf(m_state.pixelShader.ptr()) : 0;
++        if (!VrHudSkipPs(hudPs)) {
++          VrHudCensus(hudPs, PrimitiveCount);
++          stInDup = true;
++          const bool hudDid = VrHudRedirect(this, upSaved, [&] {
++            DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
++              pVertexStreamZeroData, VertexStreamZeroStride);
++          });
++          stInDup = false;
++          if (hudDid) {
++            SetViewport(&upSaved);   // SetRenderTarget reset it to full RT
++            stSpliceAccum += 1;      // keep the proxy's gameplay heuristic fed
++            return D3D_OK;
++          }
+         }
+       }
+       if (!dxvk_vr_seq && (upWhy == kUpDup || upWhy == kUpSplice)) {
+@@ -4693,18 +4743,24 @@ namespace dxvk {
+         return D3D_OK;
+       }
+       // M6.0: wrist HUD - same redirect as the DrawPrimitiveUP site.
++      // M6.1: hudskip exclusion + census, same as there.
+       if (!dxvk_vr_seq && dxvk_vr_hudwrist && upWhy == kUpDup) {
+-        stInDup = true;
+-        const bool hudDid = VrHudRedirect(this, upSaved, [&] {
+-          DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+-            PrimitiveCount, pIndexData, IndexDataFormat,
+-            pVertexStreamZeroData, VertexStreamZeroStride);
+-        });
+-        stInDup = false;
+-        if (hudDid) {
+-          SetViewport(&upSaved);
+-          stSpliceAccum += 1;
+-          return D3D_OK;
++        const uint32_t hudPs = m_state.pixelShader != nullptr
++                             ? VrPsFnvOf(m_state.pixelShader.ptr()) : 0;
++        if (!VrHudSkipPs(hudPs)) {
++          VrHudCensus(hudPs, PrimitiveCount);
++          stInDup = true;
++          const bool hudDid = VrHudRedirect(this, upSaved, [&] {
++            DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
++              PrimitiveCount, pIndexData, IndexDataFormat,
++              pVertexStreamZeroData, VertexStreamZeroStride);
++          });
++          stInDup = false;
++          if (hudDid) {
++            SetViewport(&upSaved);
++            stSpliceAccum += 1;
++            return D3D_OK;
++          }
+         }
+       }
+       if (!dxvk_vr_seq && (upWhy == kUpDup || upWhy == kUpSplice)) {
+-- 
+2.43.0
+

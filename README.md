@@ -1,88 +1,88 @@
 # Dishonored VR
 
-A from-scratch VR mod for **Dishonored (2012)**, bringing true geometric
-stereo rendering, head tracking, and motion controls to Arkane's classic —
-a game with no native VR support, no source access, and a 32-bit D3D9
-renderer that was never meant to do any of this.
+A from-scratch seated VR conversion of **Dishonored (2012)** — true stereo
+rendering, 6DOF head tracking, motion controls, roomscale, and a
+hand-aimed Blink — built as a `d3d9.dll` proxy plus a forked DXVK.
 
-**Status: work in progress.** Playable and in active testing on SteamVR
-(Valve Index), with a native OpenXR path for Quest planned. No packaged
-release yet — watch this repo.
+Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
+(OpenXR)** from the same install: the mod picks the backend automatically.
 
-## What works today
-
-- **True per-eye stereo** — real geometric separation (not fake depth /
-  reprojection), spliced draw-by-draw inside the renderer, ~227 fps flat
-  on an RTX 4090
-- **Head tracking** with 3-axis positional parallax
-- **Motion controls** — sword swings from real swings, crossbow/gun aimed
-  with your hand with its own reticle
-- **Readable UI** — menus, powers wheel, and HUD render correctly in both
-  eyes; videos and loading screens automatically drop to mono
-- **Live calibration** — in-game overlay (F10) for world scale, convergence,
-  and image fill, driven by your headset's actual IPD
-- Correct FOV through cutscene zooms, auto-start into VR, and a virtual
-  gamepad bridging VR input into the game
-
-## How it works
-
-The mod is two cooperating DLLs that sit between the game and your GPU:
-
-```
-Dishonored.exe
- └─ d3d9.dll ........... proxy: head/controller tracking, weapon drive,
-     │                   input injection, OpenVR compositor submit, overlay
-     └─ dxvk_d3d9.dll ... THIS REPO: DXVK fork translating D3D9→Vulkan,
-                          with a stereo layer that replays world draws
-                          per-eye and duplicates UI into both eyes
-```
-
-This repository is the renderer half: a fork of [DXVK](https://github.com/doitsujin/dxvk)
-carrying the VR stereo layer. All modifications live in
-`src/d3d9/d3d9_device.cpp` on the `VR-Main` branch. The proxy's source will
-get its own repository as the project matures.
+## Features
+- Full stereo rendering at 4032×2268 (2016×2268 per eye), 6DOF head
+  tracking with lean/peek, seated-friendly
+- Motion controls: both hands on Arkane's own animation rig, calibrated
+  once, with per-stance trims — sword swings, blocking, the power wheel
+- **Blink aims with your controller**, with a distance-by-hand-pitch mode
+  and a bright landing marker
+- Roomscale: walking physically moves Corvo through the game's own
+  collision, with automatic recentering
+- Crouch under furniture naturally; real-life ducking crouches Corvo
+- Wrist-mounted HUD (health/mana on your arm), conversations bring the UI
+  front-and-center automatically
+- Hand-aimed projectile weapons (crossbow, pistol, grenades)
+- Per-eye character shadows, sunshafts, and water reflections
+- In-headset settings overlay (F10)
 
 ## Requirements
+- Dishonored (2012) on Steam — the original, not the Definitive Edition
+- A VR headset: SteamVR-native (Vive/Index/etc.), or Quest with Virtual
+  Desktop
+- A GPU comfortable rendering ~4K flat Dishonored (developed on an
+  RTX 4090; the game is CPU-bound in places)
 
-- Dishonored (2012, original — not the Definitive Edition) on Steam
-- A SteamVR-compatible headset (developed on Valve Index; Quest works via
-  Link/Virtual Desktop today, native OpenXR planned)
-- A Vulkan-capable GPU with enough headroom to render the game twice
+## Install
+1. Download `DishonoredVR-alpha-38.61.zip` from the
+   [Releases page](../../releases/latest) and open the `DishonoredVR-alpha`
+   folder inside it. Copy its two folders into your Dishonored install
+   folder (`<Steam>\steamapps\common\Dishonored\`), merging when asked:
+   - `Binaries\Win32\` → 6 files (the mod)
+   - `DishonoredGame\Movies\` → skips the unskippable intro videos
+2. Run `setup_resolution.bat` (also in that folder) once. It sets
+   `ResX=4032 ResY=2268 Fullscreen=False` in your per-user
+   `Documents\My Games\Dishonored\...\DishonoredEngine.ini` (backed up
+   first). If the file doesn't exist yet, run the game once normally.
+3. **Launch through Steam** — a direct .exe launch crashes at the menu
+   (the game needs the Steam context).
 
-## Building (this repo)
+**Vive/Index:** SteamVR running, launch through Steam. Done.
+**Quest:** Virtual Desktop streaming, SteamVR NOT running, launch through
+Steam. VD at 72 Hz, SSW Auto. `steam_appid.txt` must be present (it is,
+in the package).
 
-32-bit MinGW cross-build, same as upstream DXVK:
+First minutes: `F5` recenters and sets your standing height. `F10` opens
+the overlay — go to **Hands** and press **CALIBRATE HANDS** once. Turn
+off Motion Blur in the game's video options.
 
-```
-git clone --recursive https://github.com/GingasVRFO/Dishonored-VR.git
-cd Dishonored-VR
-meson setup --cross-file build-win32.txt --buildtype release -Dbuild_id=false build.w32
-ninja -C build.w32
-# output: build.w32/src/d3d9/d3d9.dll → deploy beside Dishonored.exe as dxvk_d3d9.dll
-```
+## Known issues (alpha)
+- Some dynamic lights render per-eye inconsistently (e.g. pub lamps)
+- Fast-swinging thin objects (hanging chains) can shimmer between eyes
+- A few vents refuse crouch entry — slide in (sprint, then crouch)
+- Possession / Devouring Swarm / Windblast aim with the head (Blink is
+  hand-aimed)
+- Cutscene cameras are fixed (no head-look during cinematics)
 
-Requires Meson, Ninja, glslang, and a MinGW-w64 toolchain built with
-**posix threads** (on Debian/Ubuntu: `update-alternatives --config
-i686-w64-mingw32-g++`, pick the posix variant).
+## Building from source
+Two components:
 
-## Roadmap
+**The proxy (`d3d9.dll`)** — `src/dllmain.cpp`, cross-compiled from Linux
+with MinGW (`i686-w64-mingw32-g++`). Needs the OpenVR SDK headers, the
+OpenXR SDK headers, and Dear ImGui (docking branch works). `src/build.sh`
+has the exact invocation.
 
-- 1:1 motion-tracked hands and weapons via skeletal bone drive
-- Full 6DOF camera (roll, cutscene head-look)
-- Native OpenXR runtime for standalone Quest support
-- Per-eye water reflections
+**The DXVK fork (`dxvk_d3d9.dll`)** — DXVK v3.0.2 at commit `3a4c6fa3`
+plus the patch series in `fork-patches/` (52 patches: the stereo splicer,
+per-eye light/shadow work, the wrist-HUD redirect, and the frame-dump
+diagnostics). Apply with `git am`, build DXVK's 32-bit d3d9 target per
+DXVK's own docs (meson + MinGW), rename the output to `dxvk_d3d9.dll`.
+The shipped release uses the state after patch 49 (M8.2); patches 50–52
+are M8.3 (superseded — patch 51 reverts it) and M8.4 (not in the shipped
+build) — see the release notes before building past patch 49.
 
 ## Credits
+- Arkane Studios / Bethesda — Dishonored
+- [DXVK](https://github.com/doitsujin/dxvk) (zlib license) — the D3D9
+  translation layer this project forks
+- Dear ImGui (MIT), OpenVR SDK (BSD-3), OpenXR SDK (Apache-2.0)
 
-- [DXVK](https://github.com/doitsujin/dxvk) by Philip Rebohle, Joshua
-  Ashton, and contributors — the foundation this renderer stands on
-- [bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr) by Mohamad
-  Balouza — generous guidance on UE3 VR internals from the nearest-kin
-  project
-- Dishonored is a trademark of Bethesda Softworks / Arkane Studios. This
-  project is an unofficial fan mod, is not affiliated with or endorsed by
-  them, and requires you to own the game.
-
-## License
-
-zlib/libpng, same as upstream DXVK — see [LICENSE](LICENSE).
+This is a fan project. It contains no game assets; you need to own
+Dishonored on Steam.

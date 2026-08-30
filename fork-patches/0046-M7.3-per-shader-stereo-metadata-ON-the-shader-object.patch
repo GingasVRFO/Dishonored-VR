@@ -1,0 +1,190 @@
+From 18b54fcb2975ed341edb7e3fefa3dab411e8762a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 27 Aug 2026 05:02:36 +0000
+Subject: [PATCH 46/52] M7.3: per-shader stereo metadata ON the shader object -
+ kills the overflowing ptr->info maps that silently disabled every light-pass
+ fix
+
+---
+ src/d3d9/d3d9_device.cpp | 97 +++++++++++++++++-----------------------
+ src/d3d9/d3d9_shader.h   | 10 +++++
+ 2 files changed, 51 insertions(+), 56 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index ba4c94d7..15bf42b0 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -258,11 +258,11 @@ namespace dxvk {
+ 
+   static bool VrPsShadowRegs(IDirect3DPixelShader9* ps,
+                              uint32_t* s2w, uint32_t* s2s) {
+-    for (uint32_t i = 0; i < vrPsShadowN; i++)
+-      if (vrPsShadow[i].ps == ps) {
+-        *s2w = vrPsShadow[i].s2w; *s2s = vrPsShadow[i].s2s; return true;
+-      }
+-    return false;
++    if (ps == nullptr) return false;
++    const D3D9PixelShader* p = static_cast<D3D9PixelShader*>(ps);   // M7.3
++    if (p->vrShadowS2s == 0xffffu) return false;
++    *s2w = p->vrShadowS2w; *s2s = p->vrShadowS2s;
++    return true;
+   }
+ 
+   // hex tag for the FM draw line; also feeds the save-once census. Static
+@@ -277,9 +277,10 @@ namespace dxvk {
+   }
+ 
+   static uint32_t VrPsFnvOf(IDirect3DPixelShader9* ps) {
+-    for (uint32_t i = 0; i < vrPsIdN; i++)
+-      if (vrPsIds[i].ps == ps) return vrPsIds[i].fnv;
+-    return 0;
++    // M7.3: read the shader object's own field - the ptr->info maps this
++    // replaced overflowed at every cap tried (2048, 8192) and silently
++    // disabled the stereo fixes for late-created shaders.
++    return ps ? static_cast<D3D9PixelShader*>(ps)->vrFnv : 0;
+   }
+ 
+ 
+@@ -457,13 +458,10 @@ namespace dxvk {
+   // OTHER registers, so their attenuation lookups sampled the wrong half of
+   // the SBS pair: light in one eye, garbage in the other. The register is
+   // now read from each shader's own CTAB; c1 stays the legacy fallback.
+-  static struct { IDirect3DPixelShader9* ps; int16_t reg; } vrPsSpsb[1024];
+-  static uint32_t vrPsSpsbN = 0;
+   static int32_t VrUvRegOf(IDirect3DPixelShader9* ps) {
+-    if (ps != nullptr)
+-      for (uint32_t i = 0; i < vrPsSpsbN; i++)
+-        if (vrPsSpsb[i].ps == ps) return vrPsSpsb[i].reg;
+-    return 1;   // legacy assumption: c1
++    if (ps == nullptr) return 1;
++    const int16_t r = static_cast<D3D9PixelShader*>(ps)->vrSpsbReg;  // M7.3
++    return r >= 0 ? r : 1;   // legacy assumption: c1
+   }
+ 
+   // M6.9: LIGHT-PASS PROBE. The killmask bisection proved the artifact is
+@@ -507,13 +505,8 @@ namespace dxvk {
+   // lookup missed by exactly the eye shear - light in one eye, wrong in the
+   // other. Fix: shear the PS matrix per eye with the SAME formula
+   // (col.x += s*col.w per register; translation .x also -= s*conv).
+-  static struct { IDirect3DPixelShader9* ps; int16_t reg; } vrPsVpm[1024];
+-  static uint32_t vrPsVpmN = 0;
+   static int32_t VrPsVpmReg(IDirect3DPixelShader9* ps) {
+-    if (ps != nullptr)
+-      for (uint32_t i = 0; i < vrPsVpmN; i++)
+-        if (vrPsVpm[i].ps == ps) return vrPsVpm[i].reg;
+-    return -1;
++    return ps ? static_cast<D3D9PixelShader*>(ps)->vrVpmReg : -1;    // M7.3
+   }
+   static void VrVpmShear(const float* save, float s, float conv, float* out) {
+     std::memcpy(out, save, 16 * sizeof(float));
+@@ -6159,17 +6152,15 @@ namespace dxvk {
+     // frame map now stamps each draw with its ps hash and saves every unique
+     // bytecode, so one Scroll-Lock at the artifact produces a full census to
+     // CTAB-decode offline - the exact method that named the shaft trio.
+-    static bool vrPsIdsFullTold = false;
+-    if (vrPsIdN >= 8192 && !vrPsIdsFullTold) {
+-      vrPsIdsFullTold = true;
+-      Logger::info("VR: shader id map FULL (8192) - late shaders will not be "
+-                   "stereo-corrected; tell Claude");
+-    }
+-    if (vrPsIdN < 8192) {
++    // M7.3: NO MORE CAPS. Every shader gets its stereo metadata computed
++    // once, here, and stored on the object itself. The bounded maps this
++    // replaces overflowed at 2048 and again at 8192, and every shader past
++    // the cap was invisible to the stereo fixes - which is why measured-
++    // correct fixes (M6.8, M7.0) changed nothing on screen twice in a row.
++    {
++      D3D9PixelShader* vrPs = static_cast<D3D9PixelShader*>(*ppShader);
+       const uint32_t h = VrSm3Fnv(pFunction);
+-      vrPsIds[vrPsIdN].ps  = *ppShader;
+-      vrPsIds[vrPsIdN].fnv = h;
+-      vrPsIdN++;
++      vrPs->vrFnv = h;
+       // M5.8: family recognition by constant-table content
+       // M6.3: the SHADOW MATRIX alone is the membership test. The pub
+       // light-volume shader (b41d2dc7, sb=9 modulate, 8-vert world boxes)
+@@ -6179,40 +6170,34 @@ namespace dxvk {
+       // one matrix there.
+       const int32_t rw = VrCtabFindFloat(pFunction, "ScreenToWorld");
+       const int32_t rs2 = VrCtabFindFloat(pFunction, "ScreenToShadowMatrix");
+-      // M7.0: remember where this shader keeps its PS ViewProjectionMatrix
++      // M7.0: PS ViewProjectionMatrix register, on the object
+       {
+         const int32_t rvp = VrCtabFindFloat(pFunction, "ViewProjectionMatrix");
+-        if (rvp >= 0 && vrPsVpmN < 1024) {
+-          vrPsVpm[vrPsVpmN].ps  = *ppShader;
+-          vrPsVpm[vrPsVpmN].reg = (int16_t)rvp;
+-          vrPsVpmN++;
+-        }
++        if (rvp >= 0) vrPs->vrVpmReg = (int16_t)rvp;
+       }
+-      // M6.8: remember where this shader keeps ScreenPositionScaleBias
++      // M6.8: ScreenPositionScaleBias register, on the object
+       {
+         const int32_t rsp = VrCtabFindFloat(pFunction,
+                                             "ScreenPositionScaleBias");
+-        if (rsp >= 0 && rsp != 1 && vrPsSpsbN < 1024) {
+-          vrPsSpsb[vrPsSpsbN].ps  = *ppShader;
+-          vrPsSpsb[vrPsSpsbN].reg = (int16_t)rsp;
+-          vrPsSpsbN++;
++        if (rsp >= 0) vrPs->vrSpsbReg = (int16_t)rsp;
++      }
++      if (rs2 >= 0) {
++        vrPs->vrShadowS2w = rw >= 0 ? (uint16_t)rw : (uint16_t)0xffff;
++        vrPs->vrShadowS2s = (uint16_t)rs2;
++        static uint32_t vrShadowVariants = 0;
++        if (vrShadowVariants < 64) {
++          vrShadowVariants++;
++          char hx2[16]; std::snprintf(hx2, sizeof(hx2), "%08x", h);
++          if (rw >= 0)
++            Logger::info(str::format("VR shadowfix: shadow-projection variant ",
++              vrShadowVariants, " recognized (ps ", hx2, ", ScreenToWorld c", rw,
++              ", ScreenToShadow c", rs2, ")"));
++          else
++            Logger::info(str::format("VR shadowfix: shadow-ONLY variant ",
++              vrShadowVariants, " recognized (ps ", hx2,
++              ", ScreenToShadow c", rs2, ", no ScreenToWorld)"));
+         }
+       }
+-      if (rs2 >= 0 && vrPsShadowN < 64) {
+-        vrPsShadow[vrPsShadowN].ps  = *ppShader;
+-        vrPsShadow[vrPsShadowN].s2w = rw >= 0 ? (uint16_t)rw : (uint16_t)0xffff;
+-        vrPsShadow[vrPsShadowN].s2s = (uint16_t)rs2;
+-        vrPsShadowN++;
+-        char hx2[16]; std::snprintf(hx2, sizeof(hx2), "%08x", h);
+-        if (rw >= 0)
+-          Logger::info(str::format("VR shadowfix: shadow-projection variant ",
+-            vrPsShadowN, " recognized (ps ", hx2, ", ScreenToWorld c", rw,
+-            ", ScreenToShadow c", rs2, ")"));
+-        else
+-          Logger::info(str::format("VR shadowfix: shadow-ONLY variant ",
+-            vrPsShadowN, " recognized (ps ", hx2,
+-            ", ScreenToShadow c", rs2, ", no ScreenToWorld)"));
+-      }
+       if (h == 0x20e07766u || h == 0x5240e25cu || h == 0x70776930u)
+         Logger::info(str::format("VR shaftfix: recognized light-shaft shader (",
+           h == 0x20e07766u ? "downsample" :
+diff --git a/src/d3d9/d3d9_shader.h b/src/d3d9/d3d9_shader.h
+index 8428df19..6b37a63c 100644
+--- a/src/d3d9/d3d9_shader.h
++++ b/src/d3d9/d3d9_shader.h
+@@ -231,6 +231,16 @@ namespace dxvk {
+             uint32_t             BytecodeLength)
+       : D3D9Shader<IDirect3DPixelShader9>( pDevice, pAllocator, CommonShader, pShaderBytecode, BytecodeLength ) { }
+ 
++    // VR fork M7.3: per-shader stereo metadata lives ON the shader object.
++    // Every bounded ptr->info map before this overflowed silently (2048,
++    // then 8192 - Dishonored creates more), and shaders past the cap were
++    // invisible to the stereo fixes. Fields are set once at CreatePixelShader.
++    uint32_t vrFnv      = 0;        // SM3 bytecode FNV (0 = not computed)
++    int16_t  vrSpsbReg  = -1;       // ScreenPositionScaleBias register
++    int16_t  vrVpmReg   = -1;       // PS ViewProjectionMatrix register
++    uint16_t vrShadowS2w = 0xffff;  // ScreenToWorld reg (0xffff = none)
++    uint16_t vrShadowS2s = 0xffff;  // ScreenToShadowMatrix reg (0xffff = none)
++
+   };
+ 
+   /**
+-- 
+2.43.0
+

@@ -1,0 +1,74 @@
+From 525443ca6fe480cbc94a60332e924105015d9f70 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 30 Aug 2026 04:00:29 +0000
+Subject: [PATCH 52/52] Revert "M8.3: accept the quarter-region SPSB signature
+ [0.25...] and make the per-eye uv remap generic - main-view additive lights
+ read the SBS attenuation region correctly"
+
+This reverts commit 268e6a1997f498cbaf0ee1a0467bfc7d814c36d1.
+---
+ src/d3d9/d3d9_device.cpp | 41 ++++++++--------------------------------
+ 1 file changed, 8 insertions(+), 33 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 49b78651..2a66cf8b 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -532,46 +532,21 @@ namespace dxvk {
+ 
+   static bool StUvGrab(const float* psc1, float* out) {
+     if (!dxvk_vr_uvfix) return false;
+-    bool ok = false;
+-    // full-texture mapping: [0.5 -0.5 ~0.5 ~0.5]
+-    if (std::fabs(psc1[0] - 0.5f) <= 0.02f &&
+-        std::fabs(psc1[1] + 0.5f) <= 0.02f &&
+-        psc1[2] >= 0.49f && psc1[2] <= 0.52f &&
+-        psc1[3] >= 0.49f && psc1[3] <= 0.52f) ok = true;
+-    // M8.3: QUARTER-REGION mapping: [0.25 -0.25 ~0.25 ~0.25] - the light
+-    // attenuation constant, measured at the pub as
+-    // [0.25 -0.25 0.25022 0.250124] (half-pixel terms 0.5/2268, 0.5/4032).
+-    // The 0.5 signature test silently REJECTED it, so the additive light
+-    // draws in the main view kept sampling the attenuation region pair-wide:
+-    // after M8.2 made the region SBS, each eye read a squeezed both-eyes
+-    // image - the pub lights stayed broken while water (which goes through
+-    // the region splice itself) came right. Accepted only while lightsplit
+-    // is on, because it is only correct once the region really is SBS.
+-    if (!ok && dxvk_vr_lightsplit != 0 &&
+-        std::fabs(psc1[0] - 0.25f) <= 0.02f &&
+-        std::fabs(psc1[1] + 0.25f) <= 0.02f &&
+-        psc1[2] >= 0.24f && psc1[2] <= 0.27f &&
+-        psc1[3] >= 0.24f && psc1[3] <= 0.27f) ok = true;
+-    if (!ok) return false;
++    if (std::fabs(psc1[0] - 0.5f) > 0.02f) return false;
++    if (std::fabs(psc1[1] + 0.5f) > 0.02f) return false;
++    if (psc1[2] < 0.49f || psc1[2] > 0.52f) return false;
++    if (psc1[3] < 0.49f || psc1[3] > 0.52f) return false;
+     out[0] = psc1[0]; out[1] = psc1[1]; out[2] = psc1[2]; out[3] = psc1[3];
+     return true;
+   }
+   static void StUvForEye(const float* src, uint32_t fullW, uint32_t halfX,
+                          uint32_t halfW, float* out) {
+-    // M8.3: GENERIC per-eye remap. The old body was hardcoded to the
+-    // full-texture mapping (the "- 0.5f" center). Derivation that covers
+-    // both signatures: mono maps ndc [-1,1] to a span of width 2*sx centered
+-    // at bx; the eye's half of that span is width sx centered at
+-    // bx -/+ sx/2. So sx' = sx/2 and bx' = bx -/+ sx/2, left eye minus.
+-    // For [0.5 ...] this reproduces the old output exactly (0.25 scale,
+-    // 0.25/0.75 + half-pixel bias); for [0.25 ...] it lands each eye on its
+-    // own half of the attenuation region. Left is halfX == 0 in every
+-    // splice loop, main view and region alike.
+-    (void)fullW; (void)halfW;
+-    out[0] = src[0] * 0.5f;
++    const float W = (float)(fullW ? fullW : 1);
++    out[0] = src[0] * ((float)halfW / W);            // scale u into the half
+     out[1] = src[1];                                 // vertical is untouched
+     out[2] = src[2];
+-    out[3] = src[3] + src[0] * (halfX == 0 ? -0.5f : 0.5f);
++    out[3] = (src[3] - 0.5f)                         // keep the half-pixel
++           + ((float)halfX + (float)halfW * 0.5f) / W;
+   }
+ 
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_markkill = 0;
+-- 
+2.43.0
+

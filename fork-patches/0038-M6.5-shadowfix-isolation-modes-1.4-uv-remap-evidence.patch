@@ -1,0 +1,165 @@
+From fdd7c6c2e6075ec19d9d58bbd5cef4b674ebe1f3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 25 Aug 2026 21:56:48 +0000
+Subject: [PATCH 38/52] M6.5: shadowfix isolation modes (1..4) + uv-remap
+ evidence log + shadow VS bytecode capture
+
+---
+ src/d3d9/d3d9_device.cpp | 92 ++++++++++++++++++++++++++++++++++------
+ 1 file changed, 80 insertions(+), 12 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 854507dd..57645751 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -553,6 +553,56 @@ namespace dxvk {
+     return false;
+   }
+ 
++  // M6.5: isolation modes for the shadow splice, set from dxvk_stereo.txt:
++  //   shadowfix=1  full: eye shear + uv remap + matrix fold   (default)
++  //   shadowfix=2  shear + uv remap, NO matrix fold
++  //   shadowfix=3  shear + matrix fold, NO uv remap
++  //   shadowfix=4  shear only
++  //   shadowfix=0  off (mask reclassification included)
++  // One config digit per hypothesis - no rebuilds to bisect the math.
++  static bool VrShadowWantFold()  {
++    return dxvk_vr_shadowfix == 1 || dxvk_vr_shadowfix == 3;
++  }
++  static bool VrShadowWantRemap() {
++    return dxvk_vr_shadowfix == 1 || dxvk_vr_shadowfix == 2;
++  }
++
++  // M6.5: evidence logger - was the uv remap actually applied for this ps?
++  // (StUvGrab validates c1's SHAPE; a failed validation silently skips the
++  // remap and the depth lookup crosses the eye boundary.)
++  static void VrShadowUvLog(uint32_t pf, bool applied) {
++    static uint32_t seen[32]; static uint32_t seenN = 0;
++    for (uint32_t i = 0; i < seenN; i++) if (seen[i] == pf) return;
++    if (seenN >= 32) return;
++    seen[seenN++] = pf;
++    char hx[16]; std::snprintf(hx, sizeof(hx), "%08x", pf);
++    Logger::info(str::format("VR shadowfix: uv remap ",
++      applied ? "APPLIED" : "SKIPPED (c1 shape unrecognized)",
++      " ps=", hx));
++  }
++
++  // M6.5: save the VERTEX shader of a shadow draw once - ground truth for
++  // whether its screen-position interpolator uses the c0 we shear.
++  static void VrShadowSaveVs(IDirect3DVertexShader9* vs) {
++    if (vs == nullptr) return;
++    static uint32_t seen[8]; static uint32_t seenN = 0;
++    UINT sz = 0;
++    if (FAILED(vs->GetFunction(nullptr, &sz)) || sz == 0 || sz > (1u << 20))
++      return;
++    std::vector<uint8_t> code(sz);
++    if (FAILED(vs->GetFunction(code.data(), &sz))) return;
++    uint32_t h = 2166136261u;                       // FNV-1a (FmFnv is
++    for (uint32_t i = 0; i < sz; i++)               // declared later)
++      h = (h ^ code[i]) * 16777619u;
++    for (uint32_t i = 0; i < seenN; i++) if (seen[i] == h) return;
++    if (seenN >= 8) return;
++    seen[seenN++] = h;
++    char nm[64]; std::snprintf(nm, sizeof(nm), "vs_%08x.dxbc", h);
++    std::FILE* f = std::fopen(nm, "wb");
++    if (f) { std::fwrite(code.data(), 1, sz, f); std::fclose(f); }
++    Logger::info(str::format("VR shadowfix: shadow VERTEX shader saved ", nm));
++  }
++
+   // M6.2: shadow-splice census. M5.8's family recognition broke other
+   // lights with no capture to say WHICH cousins were wrongly spliced. Every
+   // distinct ps the shadow splice touches now logs once per launch WITH its
+@@ -4405,7 +4455,8 @@ namespace dxvk {
+       // which is exactly the artifact. Depth-tested + no-z-write + real
+       // perspective c0 IS world volume geometry, blend or not.
+       && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt
+-          || m_state.renderStates[D3DRS_ZWRITEENABLE] == FALSE)
++          || (dxvk_vr_shadowfix != 0
++              && m_state.renderStates[D3DRS_ZWRITEENABLE] == FALSE))
+       && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
+       && stHaveVP
+       && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
+@@ -4588,7 +4639,11 @@ namespace dxvk {
+         const float sepNow = dxvk_vr_sep, convNow = dxvk_vr_conv;
+         const float* pcs = reinterpret_cast<const float*>(
+           m_state.psConsts->fConsts);
+-        const bool uvDo = StUvGrab(pcs + 4, uvS);
++        const bool uvDo = StUvGrab(pcs + 4, uvS) && VrShadowWantRemap();
++        VrShadowUvLog(VrPsFnvOf(m_state.pixelShader.ptr()),
++                      StUvGrab(pcs + 4, uvS));
++        VrShadowSaveVs(m_state.vertexShader.ptr());
++        const bool shFold = VrShadowWantFold();
+         // M6.3: shadow-ONLY variants (ScreenToShadowMatrix without
+         // ScreenToWorld - e.g. b41d2dc7, the pub light volumes) carry the
+         // 0xffff sentinel in s2w and correct just the one matrix.
+@@ -4623,13 +4678,17 @@ namespace dxvk {
+             m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
+             m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
+           }
+-          if (shHasW) SetPixelShaderConstantF(vrS2w, m2, 4);
+-          SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
++          if (shFold) {
++            if (shHasW) SetPixelShaderConstantF(vrS2w, m2, 4);
++            SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
++          }
+           DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
+-        if (shHasW) SetPixelShaderConstantF(vrS2w, shSave, 4);
+-        SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
++        if (shFold) {
++          if (shHasW) SetPixelShaderConstantF(vrS2w, shSave, 4);
++          SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
++        }
+         if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
+         SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&savedVp);
+@@ -4810,7 +4869,8 @@ namespace dxvk {
+       // which is exactly the artifact. Depth-tested + no-z-write + real
+       // perspective c0 IS world volume geometry, blend or not.
+       && (m_state.renderStates[D3DRS_ALPHABLENDENABLE] != FALSE || upSamplesRt
+-          || m_state.renderStates[D3DRS_ZWRITEENABLE] == FALSE)
++          || (dxvk_vr_shadowfix != 0
++              && m_state.renderStates[D3DRS_ZWRITEENABLE] == FALSE))
+       && !m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)
+       && stHaveVP
+       && (std::fabs(stVP[3]) + std::fabs(stVP[7]) + std::fabs(stVP[11])) > 0.5f
+@@ -4990,7 +5050,11 @@ namespace dxvk {
+         const float sepNow = dxvk_vr_sep, convNow = dxvk_vr_conv;
+         const float* pcs = reinterpret_cast<const float*>(
+           m_state.psConsts->fConsts);
+-        const bool uvDo = StUvGrab(pcs + 4, uvS);
++        const bool uvDo = StUvGrab(pcs + 4, uvS) && VrShadowWantRemap();
++        VrShadowUvLog(VrPsFnvOf(m_state.pixelShader.ptr()),
++                      StUvGrab(pcs + 4, uvS));
++        VrShadowSaveVs(m_state.vertexShader.ptr());
++        const bool shFold = VrShadowWantFold();
+         // M6.3: shadow-ONLY variants (ScreenToShadowMatrix without
+         // ScreenToWorld - e.g. b41d2dc7, the pub light volumes) carry the
+         // 0xffff sentinel in s2w and correct just the one matrix.
+@@ -5025,14 +5089,18 @@ namespace dxvk {
+             m2[24 + k3] = shSave[24 + k3] - sh2 * shSave[16 + k3];
+             m2[28 + k3] = shSave[28 + k3] + sh2 * convNow * shSave[16 + k3];
+           }
+-          if (shHasW) SetPixelShaderConstantF(vrS2w, m2, 4);
+-          SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
++          if (shFold) {
++            if (shHasW) SetPixelShaderConstantF(vrS2w, m2, 4);
++            SetPixelShaderConstantF(vrS2s, m2 + 16, 4);
++          }
+           DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+             PrimitiveCount, pIndexData, IndexDataFormat,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
+-        if (shHasW) SetPixelShaderConstantF(vrS2w, shSave, 4);
+-        SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
++        if (shFold) {
++          if (shHasW) SetPixelShaderConstantF(vrS2w, shSave, 4);
++          SetPixelShaderConstantF(vrS2s, shSave + 16, 4);
++        }
+         if (uvDo) SetPixelShaderConstantF(1, uvS, 1);
+         SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&savedVp);
+-- 
+2.43.0
+

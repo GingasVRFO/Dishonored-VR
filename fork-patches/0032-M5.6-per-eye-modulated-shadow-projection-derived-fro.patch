@@ -1,0 +1,97 @@
+From e8df12c065e4da661e23a4d628ce8d9feaa0b970 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 24 Aug 2026 05:15:17 +0000
+Subject: [PATCH 32/52] M5.6: per-eye modulated-shadow projection, derived from
+ the census
+
+ps 1923f537 rebuilds world position from depth-scaled screen coords via
+ScreenToWorld (c6-c9) and ScreenToShadowMatrix (c10-c13), both mono - so
+each eye reconstructed a different wrong position and door-light shadow
+patches sat differently per eye. Disassembly shows column storage; the
+vertex shear enters screen-x as (-s*z + s*conv), which folds exactly
+into the z and translation columns of both matrices. shadowfix=0 opts
+out.
+---
+ src/d3d9/d3d9_device.cpp | 42 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index ebb37139..0b46c13c 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -119,6 +119,8 @@ namespace dxvk {
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_seq     = 0;
+   // M5.3: per-eye light shafts, on by default; shaftfix=0 opts out
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_shaftfix = 1;
++  // M5.6: per-eye shadow projection, on by default; shadowfix=0 opts out
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_shadowfix = 1;
+ 
+   struct VrPsId { IDirect3DPixelShader9* ps; uint32_t fnv; };
+   static VrPsId  vrPsIds[2048];
+@@ -226,6 +228,8 @@ namespace dxvk {
+         p = end + 1;
+       }
+     }
++    if (const char* t = std::strstr(buf, "shadowfix="))
++      dxvk_vr_shadowfix = (uint32_t)std::strtol(t + 10, nullptr, 10);
+     // M4.5: the marker is NOT logged here. M4.4 put a Logger::info in this
+     // lambda and the game stopped loading the DLL entirely - no DXVK log at
+     // all, not even the header, and the proxy could not resolve a single
+@@ -4128,6 +4132,26 @@ namespace dxvk {
+         float uvSave[4];
+         const bool uvDo = StUvGrab(
+           reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 4, uvSave);
++        // ==== M5.6: per-eye SHADOW PROJECTION =============================
++        // ps 1923f537 (census + CTAB): the modulated-shadow pass. It rebuilds
++        // world position from (screenX*z, screenY*z, z) through ScreenToWorld
++        // (c6..c9) and ScreenToShadowMatrix (c10..c13), both built from the
++        // MONO camera - so each eye's sheared view reconstructed a different
++        // wrong position, and the door-light patch sat differently per eye.
++        // The disassembly shows column storage (out = c6*x + c7*y + c8*z +
++        // c9), and the vertex-side shear enters screen-x as (-s*z + s*conv),
++        // which folds EXACTLY into the z and translation columns:
++        //   c8'  = c8  - s*c6      c9'  = c9  + s*conv*c6
++        //   c12' = c12 - s*c10     c13' = c13 + s*conv*c10
++        // Derived, not guessed - same s and conv as this draw's vertex shear.
++        float shSave[32];
++        const bool shDo = dxvk_vr_shadowfix &&
++          m_state.pixelShader != nullptr &&
++          VrPsFnvOf(m_state.pixelShader.ptr()) == 0x1923f537u;
++        if (shDo)
++          std::memcpy(shSave,
++            reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 6 * 4,
++            sizeof(shSave));
+         for (uint32_t e = 0; e < 2; e++) {
+           float s = e == 0 ? -stSepNow : stSepNow;
+           std::memcpy(eye, stVP, sizeof(eye));
+@@ -4143,9 +4167,27 @@ namespace dxvk {
+             StUvForEye(uvSave, savedVp.Width, half.X, half.Width, uvEye);
+             SetPixelShaderConstantF(1, uvEye, 1);
+           }
++          if (shDo) {
++            float m2[32];
++            std::memcpy(m2, shSave, sizeof(m2));
++            for (int k3 = 0; k3 < 4; k3++) {
++              // c8/c9 from c6, c12/c13 from c10 (offsets into the c6.. block)
++              m2[8  + k3] = shSave[8  + k3] - s * shSave[0  + k3];
++              m2[12 + k3] = shSave[12 + k3] + s * stConvNow * shSave[0  + k3];
++              m2[24 + k3] = shSave[24 + k3] - s * shSave[16 + k3];
++              m2[28 + k3] = shSave[28 + k3] + s * stConvNow * shSave[16 + k3];
++            }
++            SetPixelShaderConstantF(6, m2, 8);
++            static uint32_t vrShadowTold = 0;
++            if (vrShadowTold < 2 && e == 0) { vrShadowTold++;
++              Logger::info("VR shadowfix: modulated-shadow projection "
++                           "corrected per eye (ScreenToWorld c6-c9, "
++                           "ScreenToShadow c10-c13)"); }
++          }
+           DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
+             MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
+         }
++        if (shDo) SetPixelShaderConstantF(6, shSave, 8);
+         if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+         stSpliceAccum += 1;
+         SetVertexShaderConstantF(0, stVP, 4);
+-- 
+2.43.0
+

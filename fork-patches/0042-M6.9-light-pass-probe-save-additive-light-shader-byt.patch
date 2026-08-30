@@ -1,0 +1,69 @@
+From 29838b69e9035ffab27e63fd0c782373aa56b780 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 27 Aug 2026 03:47:51 +0000
+Subject: [PATCH 42/52] M6.9: light-pass probe - save additive light shader
+ bytecode at the draw
+
+---
+ src/d3d9/d3d9_device.cpp | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 425c05e6..28849773 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -460,6 +460,39 @@ namespace dxvk {
+     return 1;   // legacy assumption: c1
+   }
+ 
++  // M6.9: LIGHT-PASS PROBE. The killmask bisection proved the artifact is
++  // the additive per-light passes; M6.8's CTAB register fix didn't cure it.
++  // Next unknown: how those shaders actually read the attenuation buffer
++  // (constant-mapped uv? tex2Dproj on an interpolator with BAKED def
++  // constants? vPos?). Their bytecode was never captured - this saves it at
++  // the draw itself, once per shader, with the facts alongside.
++  static void VrLightPassProbe(IDirect3DPixelShader9* ps, uint32_t ab,
++                               uint32_t sb, uint32_t db, int32_t uvReg,
++                               bool uvOk, uint32_t prims) {
++    if (ps == nullptr || ab == 0u || db != 2u) return;   // additive only
++    static uint32_t seen[16];
++    static uint32_t seenN = 0;
++    UINT sz = 0;
++    if (FAILED(ps->GetFunction(nullptr, &sz)) || sz == 0 || sz > (1u << 20))
++      return;
++    std::vector<uint8_t> code(sz);
++    if (FAILED(ps->GetFunction(code.data(), &sz))) return;
++    uint32_t h = 2166136261u;
++    for (uint32_t i = 0; i < sz; i++) h = (h ^ code[i]) * 16777619u;
++    for (uint32_t i = 0; i < seenN; i++) if (seen[i] == h) return;
++    if (seenN >= 16) return;
++    seen[seenN++] = h;
++    char nm[64];
++    std::snprintf(nm, sizeof(nm), "ps_%08x.dxbc", h);
++    std::FILE* f = std::fopen(nm, "wb");
++    if (f) { std::fwrite(code.data(), 1, sz, f); std::fclose(f); }
++    char hx[16];
++    std::snprintf(hx, sizeof(hx), "%08x", h);
++    Logger::info(str::format("VR lightpass: ps=", hx, " sb=", sb,
++      " spsbReg=", uvReg, " uvgrab=", uvOk ? "OK" : "FAIL",
++      " prims=", prims, " bytes=", sz, " saved ", nm));
++  }
++
+   static bool StUvGrab(const float* psc1, float* out) {
+     if (!dxvk_vr_uvfix) return false;
+     if (std::fabs(psc1[0] - 0.5f) > 0.02f) return false;
+@@ -4356,6 +4389,11 @@ namespace dxvk {
+         const bool uvDo = StUvGrab(
+           reinterpret_cast<const float*>(m_state.psConsts->fConsts) + uvReg * 4,
+           uvSave);
++        VrLightPassProbe(m_state.pixelShader.ptr(),                   // M6.9
++          m_state.renderStates[D3DRS_ALPHABLENDENABLE],
++          m_state.renderStates[D3DRS_SRCBLEND],
++          m_state.renderStates[D3DRS_DESTBLEND],
++          uvReg, uvDo, PrimitiveCount);
+         // ==== M5.6: per-eye SHADOW PROJECTION =============================
+         // ps 1923f537 (census + CTAB): the modulated-shadow pass. It rebuilds
+         // world position from (screenX*z, screenY*z, z) through ScreenToWorld
+-- 
+2.43.0
+

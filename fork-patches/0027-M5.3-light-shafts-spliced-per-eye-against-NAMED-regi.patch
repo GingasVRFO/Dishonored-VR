@@ -1,0 +1,220 @@
+From 2a3dfe2a884aafd499717eaed6c2f96b27198209 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 24 Aug 2026 04:39:07 +0000
+Subject: [PATCH 27/52] M5.3: light shafts spliced per eye, against NAMED
+ registers
+
+The captured shaders kept their CTAB constant tables: the god-ray chain
+is ps 20e07766 (downsample), 5240e25c (radial blur), 70776930 (apply),
+and TextureSpaceBlurOrigin is c0 in all three, UVMinMax c6/c8. The chain
+ran once in mono over the side-by-side pair, blurring from a point near
+the seam. Each shaft draw is now replayed per eye-half: viewport halved,
+origin remapped into the half, clamp rect held inside the half so the
+blur never reads the other eye. Recognition is an FNV of the bytecode,
+hashed once at CreatePixelShader. shaftfix=0 opts out.
+---
+ src/d3d9/d3d9_device.cpp | 153 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 153 insertions(+)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 9744704d..4e5abb87 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -117,6 +117,34 @@ namespace dxvk {
+   // dxvk_vr_eyesign is written by the proxy once per frame, in its Present
+   // hook, for the frame that is ABOUT to be drawn: -1 left, +1 right, 0 mono.
+   extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_seq     = 0;
++  // M5.3: per-eye light shafts, on by default; shaftfix=0 opts out
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_shaftfix = 1;
++
++  struct VrPsId { IDirect3DPixelShader9* ps; uint32_t fnv; };
++  static VrPsId  vrPsIds[512];
++  static uint32_t vrPsIdN = 0;
++
++  static uint32_t VrSm3Fnv(const DWORD* code) {
++    // token stream ends at 0x0000FFFF; comment tokens carry their own length
++    uint32_t n = 1;
++    for (; n < (1u << 18); n++) {
++      const uint32_t t = code[n];
++      if (t == 0x0000FFFFu) { n++; break; }
++      if ((t & 0xFFFFu) == 0xFFFEu) n += (t >> 16) & 0x7FFF;
++    }
++    const uint8_t* b = reinterpret_cast<const uint8_t*>(code);
++    uint32_t h = 2166136261u;
++    for (uint32_t i = 0; i < n * 4; i++) { h ^= b[i]; h *= 16777619u; }
++    return h;
++  }
++
++  static uint32_t VrPsFnvOf(IDirect3DPixelShader9* ps) {
++    for (uint32_t i = 0; i < vrPsIdN; i++)
++      if (vrPsIds[i].ps == ps) return vrPsIds[i].fnv;
++    return 0;
++  }
++
++
+   extern "C" __declspec(dllexport) volatile float    dxvk_vr_eyesign = 0.0f;
+ 
+ 
+@@ -144,6 +172,8 @@ namespace dxvk {
+       dxvk_vr_showtwin = (uint32_t)std::strtol(t + 9, nullptr, 10);
+     if (const char* t = std::strstr(buf, "seq="))
+       dxvk_vr_seq = (uint32_t)std::strtol(t + 4, nullptr, 10);
++    if (const char* t = std::strstr(buf, "shaftfix="))
++      dxvk_vr_shaftfix = (uint32_t)std::strtol(t + 9, nullptr, 10);
+     // M4.5: the marker is NOT logged here. M4.4 put a Logger::info in this
+     // lambda and the game stopped loading the DLL entirely - no DXVK log at
+     // all, not even the header, and the proxy could not resolve a single
+@@ -4185,6 +4215,54 @@ namespace dxvk {
+     // recursively squeezed the SBS pair and shredded the frame in M3.2/M3.3.
+     // Gate: only duplicate when tex0 is not a render target.
+     {
++      // M5.3: the light-shaft chain, spliced per eye (see CreatePixelShader)
++      if (dxvk_vr_shaftfix && stArmed && !stInDup &&
++          m_state.pixelShader != nullptr) {
++        const uint32_t psf2 = VrPsFnvOf(m_state.pixelShader.ptr());
++        if (psf2 == 0x20e07766u || psf2 == 0x5240e25cu || psf2 == 0x70776930u) {
++          const int uvReg = psf2 == 0x5240e25cu ? 6
++                          : psf2 == 0x70776930u ? 8 : -1;
++          const float* pc = reinterpret_cast<const float*>(
++            m_state.psConsts->fConsts);
++          float o0[4], uv0[4];
++          std::memcpy(o0, pc + 0, 16);
++          if (uvReg >= 0) std::memcpy(uv0, pc + uvReg * 4, 16);
++          const D3DVIEWPORT9 sv = m_state.viewport;
++          D3DVIEWPORT9 hv = sv;
++          hv.Width = sv.Width / 2;
++          stInDup = true;
++          for (uint32_t e = 0; e < 2; e++) {
++            hv.X = e == 0 ? sv.X : sv.X + hv.Width;
++            SetViewport(&hv);
++            // origin: mono [0,1] across the pair -> the same point within
++            // this eye's half of the pair
++            float oc[4] = { e == 0 ? o0[0] * 0.5f : 0.5f + o0[0] * 0.5f,
++                            o0[1], o0[2], o0[3] };
++            SetPixelShaderConstantF(0, oc, 1);
++            if (uvReg >= 0) {
++              const float lo = e == 0 ? 0.0f : 0.5f;
++              const float hi = e == 0 ? 0.5f : 1.0f;
++              float um[4] = { uv0[0] * 0.5f + lo, uv0[1],
++                              uv0[2] * 0.5f + lo > hi ? hi : uv0[2] * 0.5f + lo,
++                              uv0[3] };
++              SetPixelShaderConstantF(uvReg, um, 1);
++            }
++            DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
++              pVertexStreamZeroData, VertexStreamZeroStride);
++          }
++          SetPixelShaderConstantF(0, o0, 1);
++          if (uvReg >= 0) SetPixelShaderConstantF(uvReg, uv0, 1);
++          SetViewport(&sv);
++          stInDup = false;
++          stSpliceAccum += 1;
++          static uint32_t vrShaftTold = 0;
++          if (vrShaftTold < 3) { vrShaftTold++;
++            Logger::info(str::format("VR shaftfix: light-shaft pass spliced "
++              "per eye (origin x ", o0[0], " -> ", o0[0] * 0.5f, " / ",
++              0.5f + o0[0] * 0.5f, ")")); }
++          return D3D_OK;
++        }
++      }
+       if (dxvk_vr_seq && upWhy == kUpSplice) {
+         // seq: one whole-frame eye. kUpDup is deliberately NOT handled here -
+         // with no split there is no second half to copy the HUD into, so it
+@@ -4417,6 +4495,55 @@ namespace dxvk {
+ 
+     // M3.5: HUD/UI both-eyes duplication, measured gate (see DrawPrimitiveUP).
+     {
++      // M5.3: the light-shaft chain, spliced per eye (see CreatePixelShader)
++      if (dxvk_vr_shaftfix && stArmed && !stInDup &&
++          m_state.pixelShader != nullptr) {
++        const uint32_t psf2 = VrPsFnvOf(m_state.pixelShader.ptr());
++        if (psf2 == 0x20e07766u || psf2 == 0x5240e25cu || psf2 == 0x70776930u) {
++          const int uvReg = psf2 == 0x5240e25cu ? 6
++                          : psf2 == 0x70776930u ? 8 : -1;
++          const float* pc = reinterpret_cast<const float*>(
++            m_state.psConsts->fConsts);
++          float o0[4], uv0[4];
++          std::memcpy(o0, pc + 0, 16);
++          if (uvReg >= 0) std::memcpy(uv0, pc + uvReg * 4, 16);
++          const D3DVIEWPORT9 sv = m_state.viewport;
++          D3DVIEWPORT9 hv = sv;
++          hv.Width = sv.Width / 2;
++          stInDup = true;
++          for (uint32_t e = 0; e < 2; e++) {
++            hv.X = e == 0 ? sv.X : sv.X + hv.Width;
++            SetViewport(&hv);
++            // origin: mono [0,1] across the pair -> the same point within
++            // this eye's half of the pair
++            float oc[4] = { e == 0 ? o0[0] * 0.5f : 0.5f + o0[0] * 0.5f,
++                            o0[1], o0[2], o0[3] };
++            SetPixelShaderConstantF(0, oc, 1);
++            if (uvReg >= 0) {
++              const float lo = e == 0 ? 0.0f : 0.5f;
++              const float hi = e == 0 ? 0.5f : 1.0f;
++              float um[4] = { uv0[0] * 0.5f + lo, uv0[1],
++                              uv0[2] * 0.5f + lo > hi ? hi : uv0[2] * 0.5f + lo,
++                              uv0[3] };
++              SetPixelShaderConstantF(uvReg, um, 1);
++            }
++            DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
++              PrimitiveCount, pIndexData, IndexDataFormat,
++              pVertexStreamZeroData, VertexStreamZeroStride);
++          }
++          SetPixelShaderConstantF(0, o0, 1);
++          if (uvReg >= 0) SetPixelShaderConstantF(uvReg, uv0, 1);
++          SetViewport(&sv);
++          stInDup = false;
++          stSpliceAccum += 1;
++          static uint32_t vrShaftTold = 0;
++          if (vrShaftTold < 3) { vrShaftTold++;
++            Logger::info(str::format("VR shaftfix: light-shaft pass spliced "
++              "per eye (origin x ", o0[0], " -> ", o0[0] * 0.5f, " / ",
++              0.5f + o0[0] * 0.5f, ")")); }
++          return D3D_OK;
++        }
++      }
+       if (dxvk_vr_seq && upWhy == kUpSplice) {
+         stInDup = true;
+         const bool did = StSeqShift(this);
+@@ -5176,6 +5303,19 @@ namespace dxvk {
+   }
+ 
+ 
++  // ==== M5.3: per-eye light shafts =======================================
++  // The captured shaders decoded with their CTAB names intact. The god-ray
++  // chain is exactly three pixel shaders - downsample 20e07766, radial blur
++  // 5240e25c, apply 70776930 - and in all three the screen-space blur origin
++  // (TextureSpaceBlurOrigin) is ps c0, with the sampling clamp (UVMinMax) at
++  // c6 on the blur and c8 on the apply. The chain runs ONCE, in mono, over a
++  // buffer that holds the SIDE-BY-SIDE PAIR, so the one origin lands near the
++  // seam and door shafts smear from the wrong point in both eyes.
++  // The fix is the splice, one level up: replay each shaft draw per eye-half
++  // - viewport restricted to that half of the (pair-holding) target, origin
++  // remapped into the half, clamp rect clamped to the half so the blur never
++  // reads the other eye. Shaders are recognized by an FNV of their bytecode,
++  // hashed once at creation. shaftfix=0 in dxvk_stereo.txt turns it off.
+   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::CreatePixelShader(
+     const DWORD*                  pFunction,
+           IDirect3DPixelShader9** ppShader) {
+@@ -5199,6 +5339,19 @@ namespace dxvk {
+       pFunction,
+       uint32_t(bytecodeLength)));
+ 
++    if (vrPsIdN < 512) {
++      const uint32_t h = VrSm3Fnv(pFunction);
++      // only the three shaft shaders are worth a slot
++      if (h == 0x20e07766u || h == 0x5240e25cu || h == 0x70776930u) {
++        vrPsIds[vrPsIdN].ps  = *ppShader;
++        vrPsIds[vrPsIdN].fnv = h;
++        vrPsIdN++;
++        Logger::info(str::format("VR shaftfix: recognized light-shaft shader ",
++          vrPsIdN, " (", h == 0x20e07766u ? "downsample" :
++          h == 0x5240e25cu ? "radial blur" : "apply", ")"));
++      }
++    }
++
+     return D3D_OK;
+   }
+ 
+-- 
+2.43.0
+

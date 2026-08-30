@@ -1,0 +1,62 @@
+From a02675577cff62ed603474f09b3027f1ccbad589 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 30 Aug 2026 03:07:02 +0000
+Subject: [PATCH 49/52] M8.2: det>0 quarter-region pass joins the M8.1 splice
+ (vp!=rt exact-quarter guard) - the pub floor pool
+
+---
+ src/d3d9/d3d9_device.cpp | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 5b2b7e1c..b32c4799 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4161,8 +4161,28 @@ namespace dxvk {
+       return D3D_OK;
+     }
+ 
++    // M8.2: the det>0 quarter-region pass joins the M8.1 splice. The pub
++    // captures close the case: the light-pass shaders map ndc into the
++    // QUARTER REGION (measured ps c1 = [0.25 -0.25 0.25022 0.250124] - the
++    // half-pixel terms are 0.5/2268 and 0.5/4032 exactly), and the draws
++    // that FILL that region with det>0 classify "vp!=rt" (viewport 2016x1134
++    // on the 4032x2268 target) - a class M8.1's mirrored-vp gate never
++    // touched. So every non-mirrored light rendered its attenuation MONO
++    // into the region, and the full-width upsample (a plain vertex-uv copy,
++    // ps c391c274) split that one mono image across the two eyes: light in
++    // one eye, absent in the other - the pub floor pool. Splice the det>0
++    // region pass exactly like the det<0 one and the upsample's 1:1 mapping
++    // lands each half on its own eye. The guard is the exact quarter shape
++    // at origin, so the 800x800 shadow tiles and other odd viewports stay
++    // untouched. lightsplit=0 reverts both, live.
++    const bool dpQuarter = dpRt != nullptr &&
++        dpVp.X == 0 && dpVp.Y == 0 &&
++        dpVp.Width  * 2 == dpRt->Desc()->Width &&
++        dpVp.Height * 2 == dpRt->Desc()->Height;
+     // M8.1: quarter-pass splice, DP flavor (see DIP site).
+-    if (!std::strcmp(dpWhy, "mirrored-vp") && dxvk_vr_lightsplit != 0 &&
++    if ((!std::strcmp(dpWhy, "mirrored-vp") ||
++         (!std::strcmp(dpWhy, "vp!=rt") && dpQuarter)) &&
++        dxvk_vr_lightsplit != 0 &&
+         !stInDup) {
+       const D3DVIEWPORT9 savedVp = dpVp;
+       stInDup = true;
+@@ -4499,7 +4519,13 @@ namespace dxvk {
+     // light passes) side-by-side within its own region. See the export
+     // comment. All class members splice - lights must depth-test against
+     // per-eye depth, so the prepass splits with them.
+-    if (!std::strcmp(stWhy, "mirrored-vp") && dxvk_vr_lightsplit != 0 &&
++    const bool stQuarter = stRt != nullptr &&
++        stVpS.X == 0 && stVpS.Y == 0 &&
++        stVpS.Width  * 2 == stRt->Desc()->Width &&
++        stVpS.Height * 2 == stRt->Desc()->Height;   // M8.2, see DP site
++    if ((!std::strcmp(stWhy, "mirrored-vp") ||
++         (!std::strcmp(stWhy, "vp!=rt") && stQuarter)) &&
++        dxvk_vr_lightsplit != 0 &&
+         !stInDup) {
+       const D3DVIEWPORT9 savedVp = stVpS;
+       stInDup = true;
+-- 
+2.43.0
+

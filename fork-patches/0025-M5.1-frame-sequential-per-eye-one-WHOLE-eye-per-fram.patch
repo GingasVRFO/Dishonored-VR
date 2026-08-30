@@ -1,0 +1,179 @@
+From 11110cd29050428be0021120879c0b912e19c881 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 21 Aug 2026 00:48:32 +0000
+Subject: [PATCH 25/52] M5.1: frame-sequential per-eye - one WHOLE eye per
+ frame, full resolution
+
+seq=1 in dxvk_stereo.txt. A qualifying draw is drawn ONCE at the app's
+full viewport with one eye's shift, instead of twice into half viewports.
+The proxy alternates which eye via dxvk_vr_eyesign and already keeps a
+full-size texture per eye.
+
+Per-eye source goes from (W/2 x H) to (W x H), post-processing runs per
+eye on a whole frame so screen-space effects are correct without the
+StUvForEye fixup, and the GPU does one draw where it did two.
+
+Cost: each eye refreshes at half the game's frame rate.
+---
+ src/d3d9/d3d9_device.cpp | 103 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 101 insertions(+), 2 deletions(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index c0d97b62..27352cfa 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -92,6 +92,34 @@ namespace dxvk {
+   static IDirect3DSurface9* vrMainTwin = nullptr;   // biggest colour twin
+   static uint64_t           vrMainTwinArea = 0;
+   extern "C" __declspec(dllexport) volatile float dxvk_vr_conv = 60.0f;
++  // ==== VR-fork M5: frame-sequential per-eye (full resolution, no split) ===
++  // The side-by-side path gives each eye HALF the frame's width, and the
++  // measurements finally made clear that is only half the story: the game's
++  // frame is ~1000 lines tall and the headset wants ~2240, so the vertical
++  // shortfall is just as bad and no amount of horizontal cleverness touches
++  // it. Splitting one frame between two eyes is the wrong shape of answer.
++  //
++  // So: stop splitting. Render the WHOLE frame for ONE eye, at the app's full
++  // viewport, and alternate which eye that is every frame. The proxy already
++  // has the machinery for this - it keeps a full-size texture per eye and
++  // submits on its own 90 Hz clock from the freshest of each - it just used
++  // to shear the view itself. Here the fork does the shift properly instead.
++  //
++  // What this buys, beyond 2x the pixels in each axis:
++  //   - post-processing, bloom, depth of field and every screen-space effect
++  //     run per eye on a whole frame, so they are correct instead of being
++  //     computed on half a frame (the entire StUvForEye fixup is moot here),
++  //   - the GPU does ONE draw where the splice did two, so the extra pixels
++  //     are close to free.
++  // What it costs: each eye refreshes at half the game's frame rate, and the
++  // two eyes are one game frame apart. At ~130 fps that is ~65 Hz per eye.
++  //
++  // dxvk_vr_eyesign is written by the proxy once per frame, in its Present
++  // hook, for the frame that is ABOUT to be drawn: -1 left, +1 right, 0 mono.
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_seq     = 0;
++  extern "C" __declspec(dllexport) volatile float    dxvk_vr_eyesign = 0.0f;
++
++
+   static bool  stArmed = [] {
+     std::FILE* f = std::fopen("dxvk_stereo.txt", "r");
+     if (!f) return false;
+@@ -114,6 +142,8 @@ namespace dxvk {
+       dxvk_vr_twinrender = (uint32_t)std::strtol(t + 11, nullptr, 10);
+     if (const char* t = std::strstr(buf, "showtwin="))
+       dxvk_vr_showtwin = (uint32_t)std::strtol(t + 9, nullptr, 10);
++    if (const char* t = std::strstr(buf, "seq="))
++      dxvk_vr_seq = (uint32_t)std::strtol(t + 4, nullptr, 10);
+     // M4.5: the marker is NOT logged here. M4.4 put a Logger::info in this
+     // lambda and the game stopped loading the DLL entirely - no DXVK log at
+     // all, not even the header, and the proxy could not resolve a single
+@@ -317,6 +347,21 @@ namespace dxvk {
+ 
+   static float stVP[16] = {};
+   static bool  stHaveVP = false;
++
++  static bool StSeqShift(D3D9DeviceEx* dev) {
++    const float sgn = dxvk_vr_eyesign;
++    if (sgn == 0.0f) return false;              // mono frame: no shift at all
++    const float sh = sgn * dxvk_vr_sep;
++    float eye[16];
++    std::memcpy(eye, stVP, sizeof(eye));
++    eye[0]  += sh * eye[3];
++    eye[4]  += sh * eye[7];
++    eye[8]  += sh * eye[11];
++    eye[12] += sh * eye[15] - sh * dxvk_vr_conv;
++    dev->SetVertexShaderConstantF(0, eye, 4);
++    return true;
++  }
++
+   static bool  stInDup  = false;
+ 
+   // M3.3: world-vs-screen-space discrimination is by depth-test state
+@@ -3631,6 +3676,20 @@ namespace dxvk {
+                 (int32_t)dpVp.Width, "x", (int32_t)dpVp.Height,
+         " fw=", dpFw, " det=", dpDet, " -> ", dpWhy));
+ 
++    if (dpWhy == kDpSplice && dxvk_vr_seq) {
++      stInDup = true;
++      const bool did = StSeqShift(this);
++      DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
++      if (did) SetVertexShaderConstantF(0, stVP, 4);
++      stInDup = false;
++      stSpliceAccum += 1;
++      static uint32_t vrToldSeq = 0;
++      if (vrToldSeq < 2) { vrToldSeq++;
++        Logger::info(str::format("VR seq: one eye per frame at FULL ",
++          dpVp.Width, "x", dpVp.Height, " (no split)")); }
++      return D3D_OK;
++    }
++
+     if (dpWhy == kDpSplice) {
+       stInDup = true;
+       D3DVIEWPORT9 half = dpVp;
+@@ -3854,6 +3913,22 @@ namespace dxvk {
+       }
+     }
+ 
++    if (stWhy == kSplice && dxvk_vr_seq) {
++      stInDup = true;
++      const bool did = StSeqShift(this);
++      DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex,
++                           NumVertices, StartIndex, PrimitiveCount);
++      if (did) SetVertexShaderConstantF(0, stVP, 4);
++      stInDup = false;
++      stSpliceAccum += 1;
++      static uint32_t vrToldSeqI = 0;
++      if (vrToldSeqI < 2) { vrToldSeqI++;
++        Logger::info(str::format("VR seq live: FULL ", stVpS.Width, "x",
++          stVpS.Height, " per eye, one eye per frame (was ",
++          stVpS.Width / 2, "x", stVpS.Height, " split)")); }
++      return D3D_OK;
++    }
++
+     if (stWhy == kSplice) {
+       {
+         const D3DVIEWPORT9 savedVp = stVpS;
+@@ -4062,7 +4137,20 @@ namespace dxvk {
+     // recursively squeezed the SBS pair and shredded the frame in M3.2/M3.3.
+     // Gate: only duplicate when tex0 is not a render target.
+     {
+-      if (upWhy == kUpDup || upWhy == kUpSplice) {
++      if (dxvk_vr_seq && upWhy == kUpSplice) {
++        // seq: one whole-frame eye. kUpDup is deliberately NOT handled here -
++        // with no split there is no second half to copy the HUD into, so it
++        // falls through and draws exactly once, like the game intended.
++        stInDup = true;
++        const bool did = StSeqShift(this);
++        DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
++          pVertexStreamZeroData, VertexStreamZeroStride);
++        if (did) SetVertexShaderConstantF(0, stVP, 4);
++        stInDup = false;
++        stSpliceAccum += 1;
++        return D3D_OK;
++      }
++      if (!dxvk_vr_seq && (upWhy == kUpDup || upWhy == kUpSplice)) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+         upHalf.Width = upSaved.Width / 2;
+@@ -4251,7 +4339,18 @@ namespace dxvk {
+ 
+     // M3.5: HUD/UI both-eyes duplication, measured gate (see DrawPrimitiveUP).
+     {
+-      if (upWhy == kUpDup || upWhy == kUpSplice) {
++      if (dxvk_vr_seq && upWhy == kUpSplice) {
++        stInDup = true;
++        const bool did = StSeqShift(this);
++        DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
++          PrimitiveCount, pIndexData, IndexDataFormat,
++          pVertexStreamZeroData, VertexStreamZeroStride);
++        if (did) SetVertexShaderConstantF(0, stVP, 4);
++        stInDup = false;
++        stSpliceAccum += 1;
++        return D3D_OK;
++      }
++      if (!dxvk_vr_seq && (upWhy == kUpDup || upWhy == kUpSplice)) {
+         stInDup = true;
+         D3DVIEWPORT9 upHalf = upSaved;
+         upHalf.Width = upSaved.Width / 2;
+-- 
+2.43.0
+

@@ -1,0 +1,484 @@
+From 0b75af957c1b3cc8adbf559a7ce2fe6f6e8d30d1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 20 Aug 2026 06:53:40 +0000
+Subject: [PATCH 15/52] M4.1: render-target identity + depth bindings in the
+ frame dump
+
+Step one of the per-eye render rewrite. Before the design can be made, the
+pass graph has to be known: how many distinct full-size targets exist, the
+order they are bound, which are ping-ponged by post-processing, and which one
+carries the image that reaches the screen. Size alone cannot answer that -
+half the targets in a UE3 frame share a size - so every surface gets a stable
+ID the first time it is seen and the dump prints IDs.
+
+Every duplicated pass in the rewrite needs a right-eye twin, and a shared
+depth buffer between eyes is one of the ways a naive rewrite breaks, so depth
+bindings are logged too.
+---
+ src/d3d9/d3d9_device.cpp | 322 ++++++++++++++++++++++++++++++++++-----
+ subprojects/.wraplock    |   0
+ 2 files changed, 286 insertions(+), 36 deletions(-)
+ create mode 100644 subprojects/.wraplock
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 4ffd81c7..618a71b8 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -93,6 +93,148 @@ namespace dxvk {
+       dxvk_vr_conv = std::strtof(c + 5, nullptr);
+     return true;
+   }();
++  // M3.14: WHICH DRAW IS THE MARKER?
++  // Three captures have now been spent trying to recognise the Blink marker by
++  // its render state - a guessed signature matched nothing twice, and a
++  // candidate sweep had its budget eaten by water-reflection draws. But the
++  // proxy already KNOWS where both markers are in the world: it computes the
++  // hand-aimed destination itself and reads the engine's head-aimed one out of
++  // the same function. So it hands both here, camera-relative, and every
++  // draw's vertex constants are scanned for a register holding a position near
++  // one of them. That names the draw AND the constant register that carries
++  // its position, in a single capture, without recognising anything.
++  //   [0..2] hand-aimed point   [3..5] head-aimed point
++  //   [6] nonzero while an aim is live   [7] match radius in world units
++  extern "C" __declspec(dllexport) volatile float dxvk_vr_mark[8] = {};
++  // M4.1 - STEP ONE OF THE PER-EYE REWRITE.
++  // The plan is to stop halving one frame and give each eye its own full-width
++  // target. Before any of that can be designed, the pass graph has to be known:
++  // how many distinct full-size render targets exist, in what order they are
++  // bound, which are ping-ponged by post-processing, and which one carries the
++  // image that reaches the screen. Size alone cannot answer that - half the
++  // targets in a UE3 frame share a size - so every surface gets a stable ID the
++  // first time it is seen, and the dump prints IDs rather than dimensions.
++  // Every duplicated pass in the rewrite needs a right-eye twin; this is the
++  // list of what would have to be twinned.
++  static const void* fmRtPtr[96] = {};
++  static uint32_t    fmRtCount   = 0;
++  static uint32_t FmRtId(const void* t) {
++    if (t == nullptr) return 0;
++    for (uint32_t i = 0; i < fmRtCount; i++)
++      if (fmRtPtr[i] == t) return i + 1;
++    if (fmRtCount < 96) { fmRtPtr[fmRtCount++] = t; return fmRtCount; }
++    return 0;
++  }
++  static uint32_t fmMarkHits = 0;
++  // M3.15: the locator named the draws; this decides what they ARE. Setting
++  // dxvk_vr_markkill to 1 skips every draw whose constants sit near the
++  // head-aimed point, to 2 skips the hand-aimed ones. Whatever vanishes from
++  // the screen is what those draws render - which is both the experiment and,
++  // for the unwanted head-aim marker, the fix. Classification only runs while
++  // an aim is live, so it costs nothing the rest of the time.
++  // M3.17: THE DEEP STEREO FIX.
++  // The Blink marker's "shadow" is a screen-space sampling bug, and the log
++  // names the constant. UE3 hands shaders ScreenPositionScaleBias so they can
++  // turn a clip position into a UV for the scene buffer, and the marker draws
++  // carry it at ps c1 = [0.5 -0.5 0.500499 0.50028]. Those trailing digits are
++  // the giveaway: 0.5 + 0.5/1003 and 0.5 + 0.5/1783, exactly half a pixel at
++  // this render size, so this is unambiguously that constant.
++  // The splice renders each eye into HALF the width but leaves the constant
++  // mapping clip space across the WHOLE render target. So every effect that
++  // reads the scene buffer - soft particles, decals, depth fades - samples at
++  // roughly double the correct horizontal offset, picking up whatever happens
++  // to sit there. That is the dark band cutting across the marker, and it is
++  // why this started when true stereo landed rather than when hand aiming did.
++  // The signature test is strict on purpose: if a shader's c1 is not this
++  // constant, it is left alone.
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_uvfix = 1;
++  static bool StUvGrab(const float* psc1, float* out) {
++    if (!dxvk_vr_uvfix) return false;
++    if (std::fabs(psc1[0] - 0.5f) > 0.02f) return false;
++    if (std::fabs(psc1[1] + 0.5f) > 0.02f) return false;
++    if (psc1[2] < 0.49f || psc1[2] > 0.52f) return false;
++    if (psc1[3] < 0.49f || psc1[3] > 0.52f) return false;
++    out[0] = psc1[0]; out[1] = psc1[1]; out[2] = psc1[2]; out[3] = psc1[3];
++    return true;
++  }
++  static void StUvForEye(const float* src, uint32_t fullW, uint32_t halfX,
++                         uint32_t halfW, float* out) {
++    const float W = (float)(fullW ? fullW : 1);
++    out[0] = src[0] * ((float)halfW / W);            // scale u into the half
++    out[1] = src[1];                                 // vertical is untouched
++    out[2] = src[2];
++    out[3] = (src[3] - 0.5f)                         // keep the half-pixel
++           + ((float)halfX + (float)halfW * 0.5f) / W;
++  }
++
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_markkill = 0;
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_markkilled = 0;
++  static int MarkClassify(const float* vs) {
++    if (dxvk_vr_mark[6] == 0.0f || dxvk_vr_markkill == 0) return 0;
++    const float t[2][3] = {
++      { dxvk_vr_mark[0], dxvk_vr_mark[1], dxvk_vr_mark[2] },
++      { dxvk_vr_mark[3], dxvk_vr_mark[4], dxvk_vr_mark[5] } };
++    const float r = dxvk_vr_mark[7] > 1.0f ? dxvk_vr_mark[7] : 160.0f;
++    // M3.18: c9 AND ONLY c9. Two clean captures, 25 matches, and every single
++    // one landed on vs c9 - that register carries the draw's object position
++    // in this engine's shaders. Sweeping a RANGE of registers is what let a
++    // stray bone match and take unrelated objects (and the player's hands)
++    // with it. One register, no sweep, no coincidences.
++    // The two clusters sit at different fixed offsets from the points we
++    // export - head marker 13-39 uu, hand marker 131-154 uu - so an absolute
++    // radius cannot separate them, but "clearly nearer to one than the other"
++    // separates them by a factor of four.
++    float best[2];
++    const float* c9 = vs + 9 * 4;
++    for (uint32_t m = 0; m < 2; m++) {
++      float dx = c9[0] - t[m][0], dy = c9[1] - t[m][1], dz = c9[2] - t[m][2];
++      best[m] = std::sqrt(dx*dx + dy*dy + dz*dz);
++    }
++    // M3.19: this line was wrong and it deleted world geometry. It read as
++    // "at least 40 uu" but resolved to r - the LOCATOR radius, 160 uu, which
++    // is deliberately generous so a first capture cannot miss. So while the
++    // register search was being narrowed, the distance test was silently
++    // widened past the 60 uu it replaced. Withholding a draw needs its own
++    // number, not the search's: the observed head marker matched within 39 uu.
++    const float kill = 45.0f;
++    (void)r;
++    if (best[0] < kill && best[0] < best[1] * 0.5f) return 2;   // hand
++    if (best[1] < kill && best[1] < best[0] * 0.5f) return 1;   // head
++    return 0;
++  }
++  static void FmMarkScan(const char* path, int32_t d, const float* vs) {
++    if (dxvk_vr_mark[6] == 0.0f || fmMarkHits >= 24) return;
++    const float t[2][3] = {
++      { dxvk_vr_mark[0], dxvk_vr_mark[1], dxvk_vr_mark[2] },
++      { dxvk_vr_mark[3], dxvk_vr_mark[4], dxvk_vr_mark[5] } };
++    const float r = dxvk_vr_mark[7] > 1.0f ? dxvk_vr_mark[7] : 160.0f;
++    for (uint32_t i = 0; i < 19 && fmMarkHits < 24; i++) {
++      const float* c = vs + i * 4;
++      // Two encodings are possible and we do not need to know which: the
++      // register may hold a position directly, or be one row of a matrix
++      // whose translation lives in the w components of three rows.
++      float cand[2][3] = { { c[0], c[1], c[2] }, { 0.0f, 0.0f, 0.0f } };
++      bool haveCol = (i + 2 < 128);
++      if (haveCol) {
++        cand[1][0] = c[3]; cand[1][1] = c[7]; cand[1][2] = c[11];
++      }
++      for (uint32_t k = 0; k < (haveCol ? 2u : 1u); k++) {
++        for (uint32_t m = 0; m < 2; m++) {
++          float dx = cand[k][0] - t[m][0];
++          float dy = cand[k][1] - t[m][1];
++          float dz = cand[k][2] - t[m][2];
++          float dd = std::sqrt(dx*dx + dy*dy + dz*dz);
++          if (!(dd < r)) continue;
++          fmMarkHits++;
++          Logger::info(str::format("FM *** MARKER MATCH d", d, " (", path,
++            ") vs c", i, k ? " w-column" : " xyz",
++            " is ", dd, " uu from the ", m ? "HEAD-aimed" : "HAND-aimed",
++            " point  [", cand[k][0], " ", cand[k][1], " ", cand[k][2], "]"));
++        }
++      }
++    }
++  }
++
+   static float stVP[16] = {};
+   static bool  stHaveVP = false;
+   static bool  stInDup  = false;
+@@ -128,6 +270,40 @@ namespace dxvk {
+   // present, log the first batch of UP draws with enough context (RT size,
+   // viewport, vertex stride) to design the per-eye UI duplication.
+   static int32_t fmUpLogged = 0;
++  // M3.13: stop guessing which draw is the marker. "Cut off in the middle" is
++  // the signature of a MONO draw in SBS: rendered once across the full frame,
++  // so the left eye sees its left half and the right eye its right half - each
++  // eye gets half a marker. M3.12 guessed a signature (depth-tested, unblended,
++  // 2-tri, samples an RT) and matched nothing in two captures while the user
++  // could plainly see the marker on screen. So dump constants for every
++  // CANDIDATE instead: anything that escaped the splice, plus anything
++  // depth-tested that samples a full-size render target (the spliced-but-
++  // wrong-UV case). Capped per frame so the log stays readable.
++  static uint32_t fmDumps = 0;
++  static void FmDumpConsts(const char* tag, int32_t d,
++                           const float* vs, const float* ps) {
++    // M3.14: the 14-slot budget was consumed entirely by water-reflection
++    // draws last time. Those two verdicts are the two most common in the
++    // frame and neither can be the marker, so they are never worth a dump.
++    if (!std::strcmp(tag, "mirrored-vp") || !std::strcmp(tag, "rt-small")
++     || !std::strcmp(tag, "no-stereo")   || !std::strcmp(tag, "recording"))
++      return;
++    if (fmDumps >= 40) return;
++    fmDumps++;
++    Logger::info(str::format("FM ==== consts for d", d, " (", tag, ") ===="));
++    for (uint32_t r = 0; r < 128; r++) {
++      const float* c = vs + r * 4;
++      if (c[0] == 0.0f && c[1] == 0.0f && c[2] == 0.0f && c[3] == 0.0f) continue;
++      Logger::info(str::format("FM   vs c", r, " = [", c[0], " ", c[1], " ",
++                               c[2], " ", c[3], "]"));
++    }
++    for (uint32_t r = 0; r < 32; r++) {
++      const float* c = ps + r * 4;
++      if (c[0] == 0.0f && c[1] == 0.0f && c[2] == 0.0f && c[3] == 0.0f) continue;
++      Logger::info(str::format("FM   ps c", r, " = [", c[0], " ", c[1], " ",
++                               c[2], " ", c[3], "]"));
++    }
++  }
+ 
+   D3D9DeviceEx::D3D9DeviceEx(
+           D3D9InterfaceEx*       pParent,
+@@ -1757,9 +1933,10 @@ namespace dxvk {
+       D3D9CommonTexture* fmTex = fmRt != nullptr ? fmRt->GetCommonTexture() : nullptr;
+       fmRtSw += 1;
+       if (fmTex != nullptr)
+-        Logger::info(str::format("FM rt", RenderTargetIndex, " ",
+-          fmTex->Desc()->Width, "x", fmTex->Desc()->Height,
+-          " fmt=", (int32_t)fmTex->Desc()->Format, " @d", fmDraw));
++        Logger::info(str::format("FM rt", RenderTargetIndex, " #",
++          FmRtId(fmTex), " ", fmTex->Desc()->Width, "x", fmTex->Desc()->Height,
++          " fmt=", (int32_t)fmTex->Desc()->Format,
++          " usage=", fmTex->Desc()->Usage, " @d", fmDraw));
+       else
+         Logger::info(str::format("FM rt", RenderTargetIndex, " null @d", fmDraw));
+     }
+@@ -1910,6 +2087,18 @@ namespace dxvk {
+     if (unlikely(ds && !(ds->GetCommonTexture()->Desc()->Usage & D3DUSAGE_DEPTHSTENCIL)))
+       return D3DERR_INVALIDCALL;
+ 
++    // M4.1: depth has to be twinned per eye too, and a shared depth buffer
++    // between the two eyes is one of the ways a naive rewrite breaks.
++    if (fmActive) {
++      const D3D9CommonTexture* dt = ds != nullptr ? ds->GetCommonTexture() : nullptr;
++      if (dt != nullptr)
++        Logger::info(str::format("FM ds #", FmRtId(dt), " ",
++          dt->Desc()->Width, "x", dt->Desc()->Height,
++          " fmt=", (int32_t)dt->Desc()->Format, " @d", fmDraw));
++      else
++        Logger::info(str::format("FM ds null @d", fmDraw));
++    }
++
+     if (m_state.depthStencil == ds)
+       return D3D_OK;
+ 
+@@ -3185,6 +3374,9 @@ namespace dxvk {
+       float eye[16];
+       const float sepNow  = dxvk_vr_sep;
+       const float convNow = dxvk_vr_conv;
++      float uvSave[4];
++      const bool uvDo = StUvGrab(
++        reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 4, uvSave);
+       for (uint32_t e = 0; e < 2; e++) {
+         float sh = e == 0 ? -sepNow : sepNow;
+         std::memcpy(eye, stVP, sizeof(eye));
+@@ -3195,8 +3387,14 @@ namespace dxvk {
+         half.X = e == 0 ? 0 : dpVp.Width - half.Width;
+         SetViewport(&half);
+         SetVertexShaderConstantF(0, eye, 4);
++        if (uvDo) {
++          float uvEye[4];
++          StUvForEye(uvSave, dpVp.Width, half.X, half.Width, uvEye);
++          SetPixelShaderConstantF(1, uvEye, 1);
++        }
+         DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
+       }
++      if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+       stSpliceAccum += 1;
+       SetVertexShaderConstantF(0, stVP, 4);
+       SetViewport(&dpVp);
+@@ -3323,6 +3521,27 @@ namespace dxvk {
+         }(),
+         " -> ", stWhy));
+ 
++    if (fmActive && !stInDup) {
++      const float* vsf = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
++      const float* psf = reinterpret_cast<const float*>(m_state.psConsts->fConsts);
++      const D3D9CommonTexture* t0 = GetCommonTexture(m_state.textures[0]);
++      const bool  samplesRt = t0 != nullptr
++                           && (t0->Desc()->Usage & D3DUSAGE_RENDERTARGET);
++      const bool  depthTested = m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE;
++      FmMarkScan("DIP", fmDraw - 1, vsf);
++      if (stWhy != kSplice)              FmDumpConsts(stWhy, fmDraw - 1, vsf, psf);
++      else if (depthTested && samplesRt) FmDumpConsts("DIP spliced+samplesRT",
++                                                      fmDraw - 1, vsf, psf);
++    }
++
++    if (dxvk_vr_markkill != 0 && !stInDup) {
++      const float* vsk = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
++      if (MarkClassify(vsk) == (int)dxvk_vr_markkill) {
++        dxvk_vr_markkilled++;
++        return D3D_OK;                      // withheld on purpose
++      }
++    }
++
+     if (stWhy == kSplice) {
+       {
+         const D3DVIEWPORT9 savedVp = stVpS;
+@@ -3332,6 +3551,9 @@ namespace dxvk {
+         float eye[16];
+         const float stSepNow  = dxvk_vr_sep;   // sample once per draw
+         const float stConvNow = dxvk_vr_conv;
++        float uvSave[4];
++        const bool uvDo = StUvGrab(
++          reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 4, uvSave);
+         for (uint32_t e = 0; e < 2; e++) {
+           float s = e == 0 ? -stSepNow : stSepNow;
+           std::memcpy(eye, stVP, sizeof(eye));
+@@ -3342,9 +3564,15 @@ namespace dxvk {
+           half.X = e == 0 ? 0 : savedVp.Width - half.Width;
+           SetViewport(&half);
+           SetVertexShaderConstantF(0, eye, 4);
++          if (uvDo) {
++            float uvEye[4];
++            StUvForEye(uvSave, savedVp.Width, half.X, half.Width, uvEye);
++            SetPixelShaderConstantF(1, uvEye, 1);
++          }
+           DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex,
+             MinVertexIndex, NumVertices, StartIndex, PrimitiveCount);
+         }
++        if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+         stSpliceAccum += 1;
+         SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&savedVp);
+@@ -3495,6 +3723,24 @@ namespace dxvk {
+         " tex0rt=", upSamplesRt ? (int32_t)upT0->Desc()->Width : 0,
+         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]",
+         " -> ", upWhy));
++
++    if (fmActive && !stInDup) {
++      const float* vsf = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
++      const float* psf = reinterpret_cast<const float*>(m_state.psConsts->fConsts);
++      const bool depthTested = m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE;
++      FmMarkScan("UP", fmDraw - 1, vsf);
++      if (upWhy != kUpDup && upWhy != kUpSplice)
++        FmDumpConsts(upWhy, fmDraw - 1, vsf, psf);
++      else if (depthTested && upSamplesRt)
++        FmDumpConsts("UP spliced+samplesRT", fmDraw - 1, vsf, psf);
++    }
++    }
++    if (dxvk_vr_markkill != 0 && !stInDup) {
++      const float* vsk = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
++      if (MarkClassify(vsk) == (int)dxvk_vr_markkill) {
++        dxvk_vr_markkilled++;
++        return D3D_OK;                      // withheld on purpose
++      }
+     }
+ 
+     // M3.5: HUD/UI both-eyes duplication, MEASURED gate. Full-size UP draws
+@@ -3511,9 +3757,17 @@ namespace dxvk {
+         float eye[16];
+         const float upSepNow  = dxvk_vr_sep;
+         const float upConvNow = dxvk_vr_conv;
++        float uvSave[4];
++        const bool uvDo = StUvGrab(
++          reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 4, uvSave);
+         for (uint32_t e = 0; e < 2; e++) {
+           upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+           SetViewport(&upHalf);
++          if (uvDo) {
++            float uvEye[4];
++            StUvForEye(uvSave, upSaved.Width, upHalf.X, upHalf.Width, uvEye);
++            SetPixelShaderConstantF(1, uvEye, 1);
++          }
+           if (upWhy == kUpSplice) {          // world-space: shift the eye too
+             float s = e == 0 ? -upSepNow : upSepNow;
+             std::memcpy(eye, stVP, sizeof(eye));
+@@ -3526,6 +3780,7 @@ namespace dxvk {
+           DrawPrimitiveUP(PrimitiveType, PrimitiveCount,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
++        if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+         if (upWhy == kUpSplice) SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&upSaved);
+         stInDup = false;
+@@ -3641,38 +3896,6 @@ namespace dxvk {
+     else if (upWorldFx)        upWhy = kUpSplice;
+     else if (upSamplesRt)      upWhy = "samples-rt";
+ 
+-    // M3.12: CONSTANT DUMP for the one draw we care about. UE3 feeds
+-    // screen-space effects a scale/bias float4 (ScreenPositionScaleBias-style)
+-    // that assumes the draw covers the WHOLE frame: uv = clip.xy*scale + bias.
+-    // Splice it into a half viewport and that constant is still the full-frame
+-    // one, so the decal samples the wrong region, its depth compare fails and
+-    // it discards itself - which is why the Blink marker is invisible dead
+-    // centre whether we splice it or not. Find the register, then patch it per
+-    // eye inside the splice the same way c0-c3 are already shifted.
+-    // Signature of the marker: depth-tested unblended 2-triangle quad that
+-    // samples a full-size render target.
+-    if (fmActive && !stInDup && upRt2 != nullptr && upSamplesRt
+-     && PrimitiveCount == 2 && NumVertices == 4
+-     && m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE
+-     && m_state.renderStates[D3DRS_ALPHABLENDENABLE] == FALSE) {
+-      Logger::info("FM ===== MARKER-SHAPED DRAW: constant dump =====");
+-      const auto& vs = m_state.vsConsts->fConsts;
+-      for (uint32_t r = 0; r < 128; r++) {
+-        const float* c = vs[r].data;
+-        if (c[0] == 0.0f && c[1] == 0.0f && c[2] == 0.0f && c[3] == 0.0f) continue;
+-        Logger::info(str::format("FM   vs c", r, " = [", c[0], " ", c[1], " ",
+-                                 c[2], " ", c[3], "]"));
+-      }
+-      const auto& ps = m_state.psConsts->fConsts;
+-      for (uint32_t r = 0; r < 32; r++) {
+-        const float* c = ps[r].data;
+-        if (c[0] == 0.0f && c[1] == 0.0f && c[2] == 0.0f && c[3] == 0.0f) continue;
+-        Logger::info(str::format("FM   ps c", r, " = [", c[0], " ", c[1], " ",
+-                                 c[2], " ", c[3], "]"));
+-      }
+-      Logger::info("FM ===== end constant dump =====");
+-    }
+-
+     if (fmActive && pVertexStreamZeroData != nullptr) {
+       fmUpLogged += 1;
+       const float* v0 = static_cast<const float*>(pVertexStreamZeroData);
+@@ -3694,6 +3917,24 @@ namespace dxvk {
+         " tex0rt=", upSamplesRt ? (int32_t)upT0->Desc()->Width : 0,
+         " v0=[", v0[0], " ", v0[1], " ", v0[2], " ", v0[3], "]",
+         " -> ", upWhy));
++
++    if (fmActive && !stInDup) {
++      const float* vsf = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
++      const float* psf = reinterpret_cast<const float*>(m_state.psConsts->fConsts);
++      const bool depthTested = m_state.renderStates[D3DRS_ZENABLE] != D3DZB_FALSE;
++      FmMarkScan("UP", fmDraw - 1, vsf);
++      if (upWhy != kUpDup && upWhy != kUpSplice)
++        FmDumpConsts(upWhy, fmDraw - 1, vsf, psf);
++      else if (depthTested && upSamplesRt)
++        FmDumpConsts("UP spliced+samplesRT", fmDraw - 1, vsf, psf);
++    }
++    }
++    if (dxvk_vr_markkill != 0 && !stInDup) {
++      const float* vsk = reinterpret_cast<const float*>(m_state.vsConsts->fConsts);
++      if (MarkClassify(vsk) == (int)dxvk_vr_markkill) {
++        dxvk_vr_markkilled++;
++        return D3D_OK;                      // withheld on purpose
++      }
+     }
+ 
+     // M3.5: HUD/UI both-eyes duplication, measured gate (see DrawPrimitiveUP).
+@@ -3705,9 +3946,17 @@ namespace dxvk {
+         float eye[16];
+         const float upSepNow  = dxvk_vr_sep;
+         const float upConvNow = dxvk_vr_conv;
++        float uvSave[4];
++        const bool uvDo = StUvGrab(
++          reinterpret_cast<const float*>(m_state.psConsts->fConsts) + 4, uvSave);
+         for (uint32_t e = 0; e < 2; e++) {
+           upHalf.X = e == 0 ? 0 : upSaved.Width - upHalf.Width;
+           SetViewport(&upHalf);
++          if (uvDo) {
++            float uvEye[4];
++            StUvForEye(uvSave, upSaved.Width, upHalf.X, upHalf.Width, uvEye);
++            SetPixelShaderConstantF(1, uvEye, 1);
++          }
+           if (upWhy == kUpSplice) {          // world-space: shift the eye too
+             float s = e == 0 ? -upSepNow : upSepNow;
+             std::memcpy(eye, stVP, sizeof(eye));
+@@ -3721,6 +3970,7 @@ namespace dxvk {
+             PrimitiveCount, pIndexData, IndexDataFormat,
+             pVertexStreamZeroData, VertexStreamZeroStride);
+         }
++        if (uvDo) SetPixelShaderConstantF(1, uvSave, 1);
+         if (upWhy == kUpSplice) SetVertexShaderConstantF(0, stVP, 4);
+         SetViewport(&upSaved);
+         stInDup = false;
+@@ -4817,7 +5067,7 @@ namespace dxvk {
+         fmActive = req || (fmArmed && (fmFrame == 1200 || fmFrame == 6000
+                                     || fmFrame == 12000));
+         if (fmActive) {
+-          fmDraw = 0; fmRtSw = 0;
++          fmDraw = 0; fmRtSw = 0; fmDumps = 0; fmMarkHits = 0;
+           Logger::info(str::format("FM ", fmFrame, " BEGIN",
+                                    req ? " (on demand)" : ""));
+         }
+diff --git a/subprojects/.wraplock b/subprojects/.wraplock
+new file mode 100644
+index 00000000..e69de29b
+-- 
+2.43.0
+

@@ -1,0 +1,108 @@
+From a82a6e4175109fa52dc133677a34022c0ea4111a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 20 Aug 2026 07:26:57 +0000
+Subject: [PATCH 17/52] M4.3: allocate a right-eye twin for every full-size
+ render target
+
+Step two of the per-eye rewrite, built on the M4.2 pass graph: 12 distinct
+targets, 46 binds, the world pass one contiguous run (d1362-d3678) and post
+a straightforward ping-pong after it. Everything except the 256x16 luminance
+strip carries view-dependent content, so everything else needs a twin.
+
+This step only allocates and reports cost - nothing renders into a twin, the
+flag defaults off. Re-entry guarded, because the twin is made through the same
+creation path and must never get a twin of its own.
+---
+ src/d3d9/d3d9_device.cpp | 62 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 61 insertions(+), 1 deletion(-)
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 33558350..c274cf2e 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -125,6 +125,30 @@ namespace dxvk {
+     if (fmRtCount < 96) { fmRtPtr[fmRtCount++] = t; return fmRtCount; }
+     return 0;
+   }
++  // M4.3 - ALLOCATE THE TWIN.
++  // The M4.2 capture gives the whole pass graph for one frame: 12 distinct
++  // render targets, 46 binds.
++  //   #1  3148x1071 A8R8G8B8   the backbuffer - first and last thing bound
++  //   #2  3148x1071 A8R8G8B8   LDR ping-pong
++  //   #3  3148x1071 16F        HDR scene colour - the world renders here
++  //   #4  3148x1071 16F        HDR ping-pong partner for #3
++  //   #5  #8        A8R8G8B8   late composite targets
++  //   #9  1574x535  16F        half-res (bloom/DOF)
++  //   #6 #7 #10 #11 787x267    quarter-res bloom chain
++  //   #12 256x16               luminance/LUT strip, view-independent
++  // The world pass is one contiguous run (d1362-d3678) and post-processing is
++  // a straightforward ping-pong after it. Everything except #12 carries
++  // view-dependent content, so everything except #12 needs a right-eye twin.
++  //
++  // This step only ALLOCATES them and reports the cost. Nothing renders into a
++  // twin yet, so behaviour is unchanged and the flag defaults off - after M4.1
++  // crashed on launch, each step of this rewrite gets to be one change.
++  extern "C" __declspec(dllexport) volatile uint32_t dxvk_vr_twin = 0;
++  struct VrTwin { IDirect3DSurface9* left; IDirect3DSurface9* right;
++                  uint32_t w, h; D3DFORMAT fmt; };
++  static VrTwin   vrTwins[32] = {};
++  static uint32_t vrTwinN     = 0;
++  static uint64_t vrTwinBytes = 0;
+   static uint32_t fmMarkHits = 0;
+   // M3.15: the locator named the draws; this decides what they ARE. Setting
+   // dxvk_vr_markkill to 1 skips every draw whose constants sit near the
+@@ -1195,7 +1219,7 @@ namespace dxvk {
+           BOOL                Lockable,
+           IDirect3DSurface9** ppSurface,
+           HANDLE*             pSharedHandle) {
+-    return CreateRenderTargetEx(
++    HRESULT hr = CreateRenderTargetEx(
+       Width,
+       Height,
+       Format,
+@@ -1205,6 +1229,42 @@ namespace dxvk {
+       ppSurface,
+       pSharedHandle,
+       0);
++
++    // M4.3: allocate the right-eye twin alongside every full-size target.
++    // Nothing renders into it yet - this measures whether the allocation
++    // succeeds at all and what it costs, which is the only thing that could
++    // make the whole approach a non-starter.
++    // Guarded against re-entry: this calls the same creation path, and a twin
++    // must never get a twin of its own.
++    static bool vrTwinning = false;
++    if (dxvk_vr_twin && SUCCEEDED(hr) && !vrTwinning && vrTwinN < 32
++        && Width >= 256 && Height >= 128) {
++      vrTwinning = true;
++      IDirect3DSurface9* twin = nullptr;
++      HRESULT thr = CreateRenderTargetEx(Width, Height, Format, MultiSample,
++                                         MultisampleQuality, Lockable,
++                                         &twin, nullptr, 0);
++      vrTwinning = false;
++      if (SUCCEEDED(thr) && twin != nullptr) {
++        // 16F formats are 8 bytes per pixel, the rest 4 - close enough to
++        // report a budget with.
++        uint32_t bpp = (Format == D3DFMT_A16B16G16R16F) ? 8u : 4u;
++        uint64_t bytes = (uint64_t)Width * Height * bpp;
++        vrTwins[vrTwinN].left  = *ppSurface;
++        vrTwins[vrTwinN].right = twin;
++        vrTwins[vrTwinN].w = Width; vrTwins[vrTwinN].h = Height;
++        vrTwins[vrTwinN].fmt = Format;
++        vrTwinN++;
++        vrTwinBytes += bytes;
++        Logger::info(str::format("VR twin ", vrTwinN, ": ", Width, "x", Height,
++          " fmt=", (int32_t)Format, " (+", bytes / (1024 * 1024),
++          " MB, total ", vrTwinBytes / (1024 * 1024), " MB)"));
++      } else {
++        Logger::warn(str::format("VR twin FAILED for ", Width, "x", Height,
++          " fmt=", (int32_t)Format, " hr=", thr));
++      }
++    }
++    return hr;
+   }
+ 
+ 
+-- 
+2.43.0
+
