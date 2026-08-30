@@ -1,8 +1,8 @@
  # Dishonored VR
 
-A from-scratch VR conversion of **Dishonored (2012)** — true stereo
+A  VR conversion of **Dishonored (2012)** true stereo
 rendering, 6DOF head tracking, motion controls, roomscale, and a
-hand-aimed Blink — built as a `d3d9.dll` proxy using a forked version of DXVK. https://github.com/doitsujin/DXVK
+hand-aimed Blink, built as a `d3d9.dll` proxy using a forked version of DXVK. https://github.com/doitsujin/DXVK
 
 Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 (OpenXR)** The mod picks the backend automatically.
@@ -11,7 +11,7 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 - Full stereo rendering at 4032×2268 (2016×2268 per eye), 6DOF head
   tracking with lean/peek, Roomscale, seated-friendly
 - Motion controls: both hands on Arkane's own animation rig, calibrated
-  once, with per-stance trims — sword swings, blocking, the power wheel
+  once, with per-stance arm position, sword swings, blocking, the power wheel
 - **Blink aims with your controller**, with a distance-by-hand-pitch mode
   and a bright landing marker
 - Roomscale: walking physically moves Corvo through the game's own
