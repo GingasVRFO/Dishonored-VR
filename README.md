@@ -49,11 +49,14 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 Steam. VD at 72 Hz, SSW Auto. `steam_appid.txt` must be present (it is,
 in the package).
 
-First minutes: `F5` recenters and sets your standing height. `F10` opens
-the overlay — go to **Hands** and press **CALIBRATE HANDS** once. Turn
-off Motion Blur in the game's video options.
+ `F5` recenters and sets your standing height. `F10` opens
+the overlay to adjust settings. Turn off Motion Blur in the game's video options.
+
+## Adjusting Hands
+You can adjust your hand location by pressing F10 then calibrate hands, then use the trim settings at the bottom to place where you want them
 
 ## Known issues (alpha)
+- Hands will rotate with your Head - currently no way to fix this, it's a locked animation from Arkane, they will still track position in 6d0f by your controllers.
 - Some dynamic lights render per-eye inconsistently 
 - Some Fast-swinging thin objects (hanging chains) can shimmer between eyes
 - A few vents refuse crouch entry — slide in (sprint, then crouch)
