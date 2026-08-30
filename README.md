@@ -76,6 +76,7 @@ You can adjust your hand location by pressing F10 then calibrate hands (Use F5 t
 - A few vents and small areas are glitchy when trying to crouch under them, slide in or use Blink
 - Possession / Devouring Swarm / Windblast aim with the head (Blink is
   hand-aimed) - Will eventually work with Hand.
+- Sometimes menus will get tiny and on your hand, this is due to the wrist HUD
 - Cutscene cameras are fixed (no head-look during cinematics)
 
 ## Support the Project
