@@ -41,8 +41,7 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
    `ResX=4032 ResY=2268 Fullscreen=False` in your per-user
    `Documents\My Games\Dishonored\...\DishonoredEngine.ini` (backed up
    first). If the file doesn't exist yet, run the game once normally.
-3. **Launch through Steam** — a direct .exe launch crashes at the menu
-   (the game needs the Steam context).
+3. **Launch through Steam** Steam is the only supported Platform right now.
 
 - **Vive/Index:** SteamVR running, launch through Steam
 
