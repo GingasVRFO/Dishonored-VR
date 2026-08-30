@@ -35,8 +35,6 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
    [Releases page](../../releases/latest) and open the `DishonoredVR-alpha`
    folder inside it. Copy its two folders into your Dishonored install
    folder (`<Steam>\steamapps\common\Dishonored\`), merging when asked:
-   - `Binaries\Win32\` → 6 files (the mod, incl. `openvr_api.dll`)
-   - `DishonoredGame\Movies\` → skips the unskippable intro videos
 2. Run `setup_resolution.bat` (also in that folder) once. It sets
    `ResX=4032 ResY=2268 Fullscreen=False` in your per-user
    `Documents\My Games\Dishonored\...\DishonoredEngine.ini` (backed up
