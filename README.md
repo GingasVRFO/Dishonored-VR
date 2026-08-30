@@ -70,7 +70,8 @@ You can adjust your hand location by pressing F10 then calibrate hands (Use F5 t
 
 ## Known issues (alpha)
 - Hands will rotate with your Head - currently no way to fix this, it's a locked animation from Arkane, they will still track position in 6d0f by your controllers.
-- Some dynamic lights render per-eye inconsistently 
+- Some dynamic lights render per-eye inconsistently
+- First Mission and Cutscene have issues, for right now play in flatscreen until you get past that part.
 - Some Fast-swinging thin objects (hanging chains) can shimmer between eyes
 - A few vents and small areas are glitchy when trying to crouch under them, slide in or use Blink
 - Possession / Devouring Swarm / Windblast aim with the head (Blink is
