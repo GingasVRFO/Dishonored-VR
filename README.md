@@ -47,8 +47,7 @@ Works with **Vive / Index (SteamVR)** and **Quest via Virtual Desktop
 - **Vive/Index:** SteamVR running, launch through Steam
 
 - **Quest:** Virtual Desktop streaming, SteamVR NOT running, launch through
-Steam. VD at 72 Hz, SSW Off. `steam_appid.txt` must be present (it is,
-in the package).
+Steam. VD at 72 Hz, SSW Off. 
 
  `F5` recenters and sets your standing height. `F10` opens
 the overlay to adjust settings. Turn off Motion Blur in the game's video options.
