@@ -80,6 +80,9 @@ You can adjust your hand location by pressing F10 then calibrate hands, then use
   hand-aimed) - Will eventually work with Hand.
 - Cutscene cameras are fixed (no head-look during cinematics)
 
+## Support the Project
+My Patreon - https://www.patreon.com/c/GingasVR
+
 ## Building from source
 Two components:
 
