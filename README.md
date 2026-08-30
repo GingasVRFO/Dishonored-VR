@@ -66,7 +66,7 @@ F10 for Overlay - Use Mouse to control it. No motion control for overlay right n
 
 
 ## Adjusting Hands
-You can adjust your hand location by pressing F10 then calibrate hands (Use F5 to recenter first) then use the trim settings at the bottom of the Hand Section to place where you want them. 
+You can adjust your hand location by pressing F10 then calibrate hands (Use F5 to recenter first) then use the trim settings at the bottom of the Hand Section to place where you want them. After you're done, click save defaults at the top.  
 
 ## Known issues (alpha)
 - Hands will rotate with your Head - currently no way to fix this, it's a locked animation from Arkane, they will still track position in 6d0f by your controllers.
