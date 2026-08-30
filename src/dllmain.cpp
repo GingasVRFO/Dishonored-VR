@@ -168,6 +168,18 @@ static bool     g_scriptHeadOK = false; // engine view hook is driving the view
 // camera - the user's "loaded a save while in a save and my head stopped".
 // The claim now expires: fresh means a script write in the last 750 ms.
 static double   g_scriptHeadMs = 0.0;
+// 38.68 THE BOAT DEATH, root cause. The direct fallback below is a RESCUE
+// for save-loads - but it seized the controller whenever script writes were
+// quiet, and "quiet" is exactly what a keyhole seat-in or cutscene looks
+// like. At a new game the script path has never claimed the camera at all,
+// so the fallback wrote controller rotation straight through the intro
+// boat's seat-in: Corvo was never seated, rode the deck standing (measured:
+// eye 78, ExitKeyhole a no-op), and when the arrival script hid the boat he
+// free-fell at frozen XY into the water. The fallback now HOLDS OFF while a
+// cinematic is announced, while the script path has not yet claimed the
+// current pawn, and for a grace window after a pawn latch (spawn/load).
+static double        g_fbPawnMs   = 0.0;  // when the current pawn latched
+static volatile LONG g_fbPvrSince = 0;    // script head write landed since latch
 static float    g_wpnTestYaw = 0.0f;    // debug: fixed yaw instead of hand
 static int      g_wpnFlipX = 0, g_wpnFlipY = 0;
 
@@ -1580,6 +1592,32 @@ static volatile unsigned int* g_dxvkKillMask = NULL;
 // Whichever value makes the artifact VANISH names the draw class that draws
 // it. That is the same bisection that found the additive light class before.
 static int g_killMaskIni = 0;         // [Debug] KillMask
+// 38.69 INTRO BOAT SKIP. The intro's boat->dock handoff never runs in VR
+// (measured across five runs: the player is never seated in the ride
+// keyhole, PVR fires free-look from second one, and the arrival script
+// hides the boat under a standing pawn - straight into the water). Until
+// the seat-in breakage is found, the shipped game's OWN developer debug
+// transitions (DefaultDebugMenu.ini, Kismet 'ce' remote events) jump past
+// the broken arrival with mission state set up by the devs themselves.
+//   [Debug] IntroSkip = 0 off
+//     1 = 'ce ChangeLvl_fromPrison_toTower'  (Dunwall Tower entry - the
+//         dev "Skip to Dunwall Tower"; prologue content preserved if it
+//         lands past the dock)
+//     2 = 'ce ChangeLvl_fromTower_toPrison'  (prison cell - guaranteed
+//         past the prologue, loses the tower scenes)
+// Armed only by a real New Game click; fires once, after the intro pawn
+// has been up for IntroSkipDelayMs.
+static int    g_introSkip        = 0;      // [Debug] IntroSkip
+static int    g_introSkipDelayMs = 6000;   // [Debug] IntroSkipDelayMs
+static bool   g_introSkipDone    = false;
+// 38.71: transition 1 half-fired from the boat: the Kismet event exists but
+// its receiver is wired for a prison->tower trip, so it raised cinematic
+// mode (63 ms later, measured), never changed the level, and OUR cine latch
+// then parked the user's controllers for the ride ("I lost access to my
+// controller inputs"). If a fired skip produces no new pawn within 15 s it
+// is declared failed and any cine latch it raised is cleared.
+static double g_introSkipFiredMs = 0.0;
+static bool   g_introSkipJudged  = false;
 static int g_swarmAim    = 1;         // 38.55: [MotionAim] SwarmAim
 static bool g_wristHud = true;                      // [Hud] WristHud
 // 38.47: the user's own idea, and a better one than the front-board and the
@@ -1594,6 +1632,37 @@ static bool g_wristHud = true;                      // [Hud] WristHud
 static int    g_dlgHudOff  = 1;        // [Hud] DialogHudOff
 static volatile LONG g_hudRedirLive = 0;  // 38.50: the redirect gate's verdict
 static double g_lastVersusMs = 0.0;        // 38.51: last block-input event
+// 38.65 THE BOAT DEATH. The intro cutscene killed a fresh new game: the
+// player settling into their chair fired a physical-crouch B pulse, and 16ms
+// later Dis_ExitKeyhole ejected Corvo from the scripted boat view - loose
+// pawn during the script, dropped in the water, dead on a first impression.
+// The game ANNOUNCES cinematics (OnToggleCinematicMode, a toggle on the
+// player controller); while one is running, every synthesized gameplay
+// input goes quiet: buttons except START (pause must always work), sticks,
+// physical-crouch pulses, roomscale. Safety: the latch self-expires after
+// 8 minutes in case an off-toggle is ever missed.
+static bool   g_cineNow   = false;
+static double g_cineOnMs  = 0.0;
+static void Log(const char* fmt, ...);   // fwd (defined below)
+static bool CylTruthLive();              // fwd
+static bool CineActive()
+{
+    if (!g_cineNow) return false;
+    // 38.66: the MAIN MENU's 3D background fires the same cinematic toggle,
+    // which parked the pad at the menu ("can't move my joystick in the main
+    // menu"). No live pawn = no gameplay cutscene to protect - clear the
+    // latch. This also self-heals toggle parity across menus and loads.
+    if (!CylTruthLive()) {
+        g_cineNow = false;
+        Log("cine: latch cleared (no live pawn - menu/load, not a cutscene)");
+        return false;
+    }
+    if (MaimNowMs() - g_cineOnMs > 480000.0) {   // missed off-toggle escape
+        g_cineNow = false;
+        Log("cine: latch expired after 8 min - inputs live again");
+    }
+    return g_cineNow;
+}
 static float  g_dlgHoldMs  = 12000.0f; // [Hud] DialogHoldMs
 static double g_dlgUntilMs = 0.0;      // armed until (re-armed per event)
 // 34.7: the wrist PANEL. The fork's HUD texture is GPU-downscaled
@@ -1783,6 +1852,25 @@ static int   g_deepCrouchCfg = 1;     // [PosTrack] DeepCrouch
 static float g_deepCrouchUU  = 45.0f; // [PosTrack] DeepCrouchUU (half-height)
 static float g_dcOurs        = 0.0f;  // last value WE wrote (0 = not ours)
 static float g_cylLast = -1.0f;       // 38.19: last good cylinder read
+// 38.62 SPECTATOR MIRROR - the streamer feature. The desktop window shows
+// the raw SBS pair, which no viewer wants and which OBS layers can never
+// capture on this game anyway (Dishonored is 32-bit; the OpenXR capture
+// layers ship 64-bit, and our loaderless XR has no layer seam to begin
+// with). We own the backbuffer, so after the VR path has consumed it the
+// window content is rewritten to ONE eye, centre-cropped to 16:9 - a Game
+// Capture of Dishonored in OBS is the entire streamer setup.
+// [Screen] MirrorMode: 0=sbs (unchanged), 1=left eye, 2=right eye.
+static int g_mirrorMode = 0;          // [Screen] MirrorMode
+// 38.64: the eye is PORTRAIT (2016x2268) - the 16:9 crop threw away a third
+// of the view ("it's cut off"). Default now shows the WHOLE eye pillarboxed
+// on black; MirrorAspect crops for taste (1.78 = the old behaviour).
+// MirrorHud stamps the wrist-HUD texture into the corner so streams show
+// health/mana - the panel is drawn into the HEADSET's eye textures and was
+// never in the game backbuffer at all.
+static float g_mirrorAspect = 0.0f;   // [Screen] MirrorAspect (0 = full eye)
+static int   g_mirrorHud    = 0;      // [Screen] MirrorHud (user: off)
+static IDirect3DSurface9* g_specTmp = NULL;
+static UINT g_specW = 0, g_specH = 0;
 static int   g_crouchHideCfg   = 1;      // [Hands] CrouchHideArms
 static float g_crouchHideCyl   = 76.0f;  // [Hands] CrouchHideCyl
 static float g_crouchHideScale = 0.02f;  // [Hands] CrouchHideScale
@@ -2023,7 +2111,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.61";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.71";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -2791,9 +2879,20 @@ static void LoadConfig()
     GetPrivateProfileStringA("Debug", "Probe", "", g_dbgProbe,
                              sizeof(g_dbgProbe), ini);
     g_swarmAim = IniFloat(ini, "MotionAim", "SwarmAim", 1) != 0.0f;   // 38.55
+    g_mirrorMode = (int)IniFloat(ini, "Screen", "MirrorMode", 0);      // 38.62
+    if (g_mirrorMode < 0 || g_mirrorMode > 2) g_mirrorMode = 0;
+    g_mirrorAspect = IniFloat(ini, "Screen", "MirrorAspect", 0.0f);    // 38.64
+    if (g_mirrorAspect != 0.0f && g_mirrorAspect < 0.5f)  g_mirrorAspect = 0.5f;
+    if (g_mirrorAspect > 2.5f) g_mirrorAspect = 2.5f;
+    g_mirrorHud = IniFloat(ini, "Screen", "MirrorHud", 0) != 0.0f;
     g_killMaskIni = (int)IniFloat(ini, "Debug", "KillMask", 0);   // 38.49
     if (g_killMaskIni < 0)  g_killMaskIni = 0;
     if (g_killMaskIni > 63) g_killMaskIni = 63;
+    g_introSkip = (int)IniFloat(ini, "Debug", "IntroSkip", 0);    // 38.69
+    if (g_introSkip < 0 || g_introSkip > 2) g_introSkip = 0;
+    g_introSkipDelayMs = (int)IniFloat(ini, "Debug", "IntroSkipDelayMs", 6000);
+    if (g_introSkipDelayMs < 1000)  g_introSkipDelayMs = 1000;
+    if (g_introSkipDelayMs > 60000) g_introSkipDelayMs = 60000;
     g_meleeOn     = IniFloat(ini, "Melee", "Enabled", 1) != 0.0f;
     g_meleeSpeed  = IniFloat(ini, "Melee", "SwingSpeed", 1.8f);
     if (g_meleeSpeed < 0.5f) g_meleeSpeed = 0.5f;
@@ -8078,6 +8177,31 @@ static void RotInjectTick()
         f5Was = f5;
     }
     if (!g_rotInject) return;
+    // 38.68: scripted-camera manners. Quiet script writes are not always an
+    // emergency - a keyhole seat-in or a cutscene mutes them ON PURPOSE, and
+    // grabbing the controller there is what broke the intro boat (see the
+    // globals note). Hold off while the engine has announced a cinematic,
+    // while the script path has never claimed the current pawn, and for a
+    // grace window after any pawn latch. Normal head tracking (the script
+    // path itself) is untouched by every one of these.
+    {
+        static int fbHoldWas = 0;
+        int fbHold = 0;
+        if (CineActive())                                fbHold = 1;
+        else if (!g_fbPvrSince)                          fbHold = 2;
+        else if (MaimNowMs() - g_fbPawnMs < 15000.0)     fbHold = 3;
+        if (fbHold) {
+            if (fbHold != fbHoldWas)
+                Log("viewinject: direct fallback HOLDING OFF (%s) - the "
+                    "game's scripted camera keeps the controller",
+                    fbHold == 1 ? "cinematic announced" :
+                    fbHold == 2 ? "script path has not claimed this pawn yet"
+                                : "fresh pawn grace");
+            fbHoldWas = fbHold;
+            return;
+        }
+        fbHoldWas = 0;
+    }
     // the script hook drives the view only while its writes are FRESH; a
     // stale claim (save-load killed the event) hands control back here
     if (g_scriptHeadOK && (MaimNowMs() - g_scriptHeadMs) < 750.0) return;
@@ -9307,7 +9431,14 @@ static void PeLatch(void* obj)
     void* cls = *(void**)((uint8_t*)obj + kClassOff);
     if (!cls) return;
     if (cls == g_clsCtrl) { g_peCtrl = (uint8_t*)obj; return; }
-    if (cls == g_clsPawn) { g_pePawn = (uint8_t*)obj; return; }
+    if (cls == g_clsPawn) {
+        if (g_pePawn != (uint8_t*)obj) {          // 38.68: NEW pawn = fresh
+            g_pePawn = (uint8_t*)obj;             // spawn/load - restart the
+            g_fbPawnMs = MaimNowMs();             // fallback's hold-off
+            g_fbPvrSince = 0;
+        }
+        return;
+    }
 
     static void* rejected[64];
     static int   rejN = 0;
@@ -9322,6 +9453,7 @@ static void PeLatch(void* obj)
     } else if (strstr(cn, "PlayerPawn") && !strstr(cn, "Proxy") &&
                !strstr(cn, "Tweaks") && !strstr(cn, "Specific")) {
         g_clsPawn = cls; g_pePawn = (uint8_t*)obj;
+        g_fbPawnMs = MaimNowMs(); g_fbPvrSince = 0;   // 38.68: fresh pawn
         Log("handmesh: latched pawn '%s' @ %p (from the event stream)", cn, obj);
     }
 }
@@ -13998,6 +14130,7 @@ static void CrouchStateTick()
                 " bWants=%d eyeSays=%d  pad=0x%04x mask=0x%04x"
                 " btn=%d btnSays=%d (%s%s)"
                 " | stickRaw=(%.2f,%.2f) stickOut=(%.2f,%.2f) spd=%.0fuu/s"
+                " pos=(%.0f,%.0f)"          // 38.67: pawn XY - the boat trace
                 " menu=%d/%d wheel=%d mono=%d",
                 cz, pz, cz - pz, (int)flagSays, (int)wantsSays,
                 (int)g_eyeCrouched,
@@ -14008,6 +14141,7 @@ static void CrouchStateTick()
                 g_crouchTogLock ? ", measured" : ", assumed",
                 g_dbgRawMx, g_dbgRawMy,
                 dlx / 32767.0f, dly / 32767.0f, spd,
+                px2, py2,
                 (int)g_menuOpen, (int)g_inMenu, (int)g_wheelHeld,
                 (int)g_sbsMonoNow);
         }
@@ -15625,6 +15759,7 @@ static void ApplyHeadToViewRotation(void* parms)
     InterlockedIncrement(&g_pvrWrites);   // 30.57: writes that actually landed
     g_scriptHeadOK = true;
     g_scriptHeadMs = MaimNowMs();
+    g_fbPvrSince   = 1;   // 38.68: script path has claimed this pawn's camera
     g_viewPitchRad = (float)rot[0] / kUEPerRad;
     g_viewYawRad   = (float)rot[1] / kUEPerRad;
     // the head values THIS camera write was computed from - matched pair
@@ -16247,6 +16382,67 @@ static int RunConsole(const wchar_t* wcmd, char* reply, int replyCap)
     return got;
 }
 
+// 38.69: fire the developer level-transition once the intro pawn is up.
+// 38.70: the NewGameClicked arm NEVER FIRED (measured - the main menu's
+// click never reaches ProcessEvent as that name; the menu closed via the
+// auto-start fallback and the skip sat unarmed while the boat played).
+// The trigger is now the one signal that cannot miss: the intro boat's
+// spawn point is a fixed world coordinate, measured at (-3901,36639,-225)
+// across runs. Any fresh pawn standing near it IS a new game's intro -
+// a mid-game save can never be there, and a save AT the intro start dies
+// at the dock anyway, so skipping it too is correct.
+static void IntroSkipApply()
+{
+    if (!g_introSkip || g_peReentry) return;
+    double now = MaimNowMs();
+    // 38.71: judge a fired skip - a transition that took gives a NEW pawn
+    // latch; one that half-fired must not leave the controllers parked.
+    if (g_introSkipDone) {
+        if (g_introSkipJudged || g_introSkipFiredMs <= 0.0) return;
+        if (g_fbPawnMs > g_introSkipFiredMs) {
+            g_introSkipJudged = true;
+            Log("introskip: transition TOOK (new pawn after the jump)");
+        } else if (now - g_introSkipFiredMs > 15000.0) {
+            g_introSkipJudged = true;
+            Log("introskip: transition DID NOT TAKE (no level change in 15s)");
+            if (g_cineNow && g_cineOnMs >= g_introSkipFiredMs) {
+                g_cineNow = false;
+                Log("cine: latch cleared - it was raised by the failed skip, "
+                    "inputs live again");
+            }
+        }
+        return;
+    }
+    if (!g_pePawn || !CylTruthLive()) return;   // no live level yet
+    if (g_fbPawnMs <= 0.0 || now - g_fbPawnMs < (double)g_introSkipDelayMs)
+        return;
+    if (!g_actorLocFound || !RangeReadable(g_pePawn + g_actorLocOff, 12))
+        return;                       // offset not found yet - retry next tick
+    // one position check per pawn latch, and only once a position was read
+    static double checkedLatch = -1.0;
+    if (g_fbPawnMs == checkedLatch) return;
+    checkedLatch = g_fbPawnMs;
+    const float* L = (const float*)(g_pePawn + g_actorLocOff);
+    float dx = L[0] - (-3901.0f), dy = L[1] - 36639.0f;
+    float dz = L[2] - (-225.0f);
+    if (dx * dx + dy * dy > 4000.0f * 4000.0f || dz > 1000.0f || dz < -1000.0f) {
+        Log("introskip: pawn at (%.0f,%.0f,%.1f) is not the intro boat - "
+            "no skip", L[0], L[1], L[2]);
+        return;
+    }
+    g_introSkipDone  = true;
+    g_introSkipFiredMs = now;
+    const wchar_t* cmd = (g_introSkip == 1)
+        ? L"ce ChangeLvl_fromPrison_toTower"
+        : L"ce ChangeLvl_fromTower_toPrison";
+    char reply[256];
+    RunConsole(cmd, reply, sizeof(reply));
+    Log("introskip: FIRED dev transition %d (%s) -> \"%s\" - jumping past "
+        "the broken boat arrival", g_introSkip,
+        g_introSkip == 1 ? "to Dunwall Tower" : "to Prison",
+        reply[0] ? reply : "(empty reply)");
+}
+
 static void SetResApply()
 {
     if (g_setResDone || !g_forceResW || !g_forceResH) return;
@@ -16331,6 +16527,7 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
         }
     }
     SetResApply();     // 32.83: ask the engine for the resolution, once
+    IntroSkipApply();  // 38.69: jump past the broken boat arrival, once
     FovLeverApply();   // 30.50: outrun the engine's per-tick FOV recompute
     BlinkTestApply();  // 32.14: same lane, same reason
     SkcRotApply();     // 32.1: same trick for the hand rotators
@@ -16395,6 +16592,9 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
                 if (strstr(nm, "MenuClosed") || strstr(nm, "ResumeGameClicked") ||
                     strstr(nm, "NewGameClicked")) {
                     if (g_menuOpen) { g_menuOpen = false; Log("menu: closed (%s)", nm); }
+                    // (38.70: the NewGameClicked arm lived here and never
+                    // fired - the skip now triggers on the intro boat's
+                    // measured spawn position instead, in IntroSkipApply)
                 } else if (strstr(nm, "OpenPauseMenu") || strstr(nm, "MessageBox") ||
                            strstr(nm, "CanLoadGame") || strstr(nm, "CanSaveGame") ||
                            strstr(nm, "SaveSlotInfos") || strstr(nm, "BackToWindows") ||
@@ -16508,6 +16708,71 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
                     }
                     }
                     dlgSkip:;
+                }
+                if (!strcmp(nm, "OnToggleCinematicMode")) {   // 38.65
+                    g_cineNow = !g_cineNow;
+                    if (g_cineNow) g_cineOnMs = MaimNowMs();
+                    Log("cine: %s - synthesized inputs %s",
+                        g_cineNow ? "ON" : "off",
+                        g_cineNow ? "PARKED (pause still works)" : "live");
+                }
+                // 38.67 BOAT-DEATH FORENSICS - log only, no behavior change.
+                // Three runs died identically with three theories eliminated
+                // (synthesized inputs parked, keyhole untouched, real movie
+                // files restored). The event log names CLASSES but not which
+                // OBJECT died or WHERE, so every event in the measured death
+                // chain now prints the instance name, pointer and location,
+                // and the volume events decode the pawn argument. One run of
+                // this says who falls, from where, and whether it is the
+                // player pawn (g_pePawn) or a scripted stand-in.
+                if (!strcmp(nm, "PawnEnteredVolume")  ||
+                    !strcmp(nm, "PawnLeavingVolume")  ||
+                    !strcmp(nm, "ChooseAndTriggerDeathEvent") ||
+                    !strcmp(nm, "PlayDying")          ||
+                    !strcmp(nm, "NotifyKilled")       ||
+                    !strcmp(nm, "PreventDeath")       ||
+                    !strcmp(nm, "BaseChange")         ||
+                    !strcmp(nm, "Destroyed")          ||
+                    !strcmp(nm, "OnToggleHidden")     ||
+                    !strcmp(nm, "OnNPCMarkForVanish") ||
+                    !strcmp(nm, "Dis_ExitKeyhole")    ||
+                    !strcmp(nm, "OnObjectiveAction")  ||
+                    !strcmp(nm, "OnToggleCinematicMode")) {
+                    char loc[64]; strcpy(loc, "loc=?");
+                    uint8_t* ob = (uint8_t*)obj;
+                    if (g_actorLocFound && RangeReadable(ob + g_actorLocOff, 12)) {
+                        const float* L = (const float*)(ob + g_actorLocOff);
+                        if (L[0] > -1e7f && L[0] < 1e7f && L[2] > -1e7f && L[2] < 1e7f)
+                            _snprintf(loc, 63, "loc=(%.0f,%.0f,%.1f)", L[0], L[1], L[2]);
+                    }
+                    const char* inm = RangeReadable(ob + kNameOff, 4)
+                                    ? RealName(*(uint32_t*)(ob + kNameOff)) : NULL;
+                    const char* ocn = ObjClassName(ob);
+                    Log("boatf: %-26s on %s '%s' @%p %s%s",
+                        nm, ocn ? ocn : "?", inm ? inm : "?", (void*)ob, loc,
+                        (ob == g_pePawn) ? "  <== THE PLAYER PAWN" : "");
+                    // the volume events carry the pawn that moved as arg 0
+                    if (!strcmp(nm, "PawnEnteredVolume") ||
+                        !strcmp(nm, "PawnLeavingVolume")) {
+                        uint8_t* ap = (a2 && !((uintptr_t)a2 & 3) &&
+                                       RangeReadable(a2, 4)) ? *(uint8_t**)a2 : NULL;
+                        if (ap && !((uintptr_t)ap & 3) &&
+                            RangeReadable(ap, kClassOff + 4)) {
+                            char al[64]; strcpy(al, "loc=?");
+                            if (g_actorLocFound && RangeReadable(ap + g_actorLocOff, 12)) {
+                                const float* L2 = (const float*)(ap + g_actorLocOff);
+                                if (L2[0] > -1e7f && L2[0] < 1e7f)
+                                    _snprintf(al, 63, "loc=(%.0f,%.0f,%.1f)",
+                                              L2[0], L2[1], L2[2]);
+                            }
+                            const char* an = RangeReadable(ap + kNameOff, 4)
+                                           ? RealName(*(uint32_t*)(ap + kNameOff)) : NULL;
+                            const char* acn = ObjClassName(ap);
+                            Log("boatf:   the pawn: %s '%s' @%p %s%s",
+                                acn ? acn : "?", an ? an : "?", (void*)ap, al,
+                                (ap == g_pePawn) ? "  <== THE PLAYER PAWN" : "");
+                        }
+                    }
                 }
                 if (strstr(nm, "Versus")) {
                     g_lastVersusMs = MaimNowMs();   // 38.51: see dialog gate
@@ -18352,7 +18617,8 @@ static void UpdateVirtualPad()
     // 38.46: walking in the room pushes the movement stick, so the pawn goes
     // where you went - through the game's own collision, no wall clipping.
     // Never during a menu; that stick is navigation there.
-    if (g_roomScaleCfg && active && !g_menuOpen && !g_inMenu) {
+    if (g_roomScaleCfg && active && !g_menuOpen && !g_inMenu &&
+        !CineActive()) {
         float f = g_roomFwdM, rr = g_roomRightM;
         float len = sqrtf(f * f + rr * rr);
         if (len > g_roomDeadM && len > 0.0001f) {
@@ -18369,6 +18635,16 @@ static void UpdateVirtualPad()
                 Log("roomscale: offset %.2f m (fwd %.2f, right %.2f) -> stick "
                     "%.2f", len, f, rr, m); }
         }
+    }
+    // 38.65: cinematic running - park the pad. Buttons except START are
+    // dropped (a stray A or a chair-shuffle B pulse must never eject the
+    // player from a scripted sequence again); sticks and triggers go to
+    // zero. The game's own toggle giveth and taketh away.
+    if (active && !g_menuOpen && !g_inMenu && CineActive()) {
+        xs.Gamepad.wButtons &= XINPUT_GAMEPAD_START;
+        xs.Gamepad.sThumbLX = 0; xs.Gamepad.sThumbLY = 0;
+        xs.Gamepad.sThumbRX = 0; xs.Gamepad.sThumbRY = 0;
+        xs.Gamepad.bLeftTrigger = 0; xs.Gamepad.bRightTrigger = 0;
     }
     if (g_menuOpen && active) {
         xs.Gamepad.sThumbLX = MenuStep(xs.Gamepad.sThumbLX, 0);
@@ -19993,6 +20269,75 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* self, const RECT* src,
         }
         if (g_vrReady)
             VRFrame(self);
+        // 38.62: spectator mirror - AFTER the VR path has read the SBS
+        // backbuffer, rewrite it to a single 16:9-cropped eye for the
+        // desktop window / OBS. The headset never sees this: everything VR
+        // consumes was captured above.
+        if (g_mirrorMode != 0 && g_vrReady) {
+            IDirect3DSurface9* sbb = NULL;
+            if (SUCCEEDED(self->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO,
+                                              &sbb)) && sbb) {
+                D3DSURFACE_DESC sd; sbb->GetDesc(&sd);
+                if (g_specTmp && (g_specW != sd.Width || g_specH != sd.Height)) {
+                    g_specTmp->Release(); g_specTmp = NULL;
+                }
+                if (!g_specTmp &&
+                    SUCCEEDED(self->CreateRenderTarget(sd.Width, sd.Height,
+                        sd.Format, D3DMULTISAMPLE_NONE, 0, FALSE,
+                        &g_specTmp, NULL))) {
+                    g_specW = sd.Width; g_specH = sd.Height;
+                    Log("mirror: spectator mode %d ready (%s eye, 16:9 crop)",
+                        g_mirrorMode, g_mirrorMode == 1 ? "left" : "right");
+                }
+                if (g_specTmp &&
+                    SUCCEEDED(self->StretchRect(sbb, NULL, g_specTmp, NULL,
+                                                D3DTEXF_NONE))) {
+                    const LONG eyeW = (LONG)(sd.Width / 2);
+                    const LONG eyeH = (LONG)sd.Height;
+                    LONG cropH = eyeH;                       // full eye
+                    if (g_mirrorAspect > 0.0f) {             // optional crop
+                        cropH = (LONG)(eyeW / g_mirrorAspect);
+                        if (cropH > eyeH) cropH = eyeH;
+                    }
+                    RECT src;
+                    src.left   = g_mirrorMode == 2 ? eyeW : 0;
+                    src.right  = src.left + eyeW;
+                    src.top    = (eyeH - cropH) / 2;
+                    src.bottom = src.top + cropH;
+                    // dest: preserve the source aspect inside the frame -
+                    // pillarbox on black instead of stretching to fit.
+                    self->ColorFill(sbb, NULL, D3DCOLOR_XRGB(0, 0, 0));
+                    const double sa = (double)eyeW / (double)cropH;
+                    const double fa = (double)sd.Width / (double)sd.Height;
+                    RECT dst;
+                    if (sa < fa) {           // narrower than frame: pillarbox
+                        LONG w = (LONG)(sd.Height * sa);
+                        dst.left = ((LONG)sd.Width - w) / 2; dst.right = dst.left + w;
+                        dst.top = 0; dst.bottom = (LONG)sd.Height;
+                    } else {                 // wider: letterbox
+                        LONG h = (LONG)(sd.Width / sa);
+                        dst.top = ((LONG)sd.Height - h) / 2; dst.bottom = dst.top + h;
+                        dst.left = 0; dst.right = (LONG)sd.Width;
+                    }
+                    self->StretchRect(g_specTmp, &src, sbb, &dst,
+                                      D3DTEXF_LINEAR);
+                    // 38.64: HUD inset - health/mana for the stream. The
+                    // wrist panel's downscale RT already holds the HUD frame
+                    // whenever the redirect is on; park it bottom-left.
+                    if (g_mirrorHud && g_hudSmall) {
+                        LONG ih = (LONG)(sd.Height / 5);
+                        LONG iw = ih * (LONG)HUDRB_W / (LONG)HUDRB_H;
+                        RECT hd;
+                        hd.left = dst.left + (LONG)(sd.Height / 45);
+                        hd.bottom = dst.bottom - (LONG)(sd.Height / 45);
+                        hd.right = hd.left + iw; hd.top = hd.bottom - ih;
+                        self->StretchRect(g_hudSmall, NULL, sbb, &hd,
+                                          D3DTEXF_LINEAR);
+                    }
+                }
+                sbb->Release();
+            }
+        }
         // (head-injection / camera tracer removed — stereo + mouse-look + AER only)
         // UE3 probe: automatic at ~frame 900 and ~frame 14400, or F9 on demand
         bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
@@ -20380,6 +20725,13 @@ static HRESULT __stdcall hkReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* 
     // 34.7: the panel's POOL_DEFAULT downscale RT must not survive a Reset
     if (g_hudSmall) { g_hudSmall->Release(); g_hudSmall = NULL; }
     if (g_hudSys)   { g_hudSys->Release();   g_hudSys   = NULL; }
+    // 38.63: THE MIRROR BLACK SCREEN. 38.62's spectator temp is a
+    // POOL_DEFAULT render target and was never released here - so the
+    // game's Reset failed forever (one retry per second, both black-screen
+    // logs end in that loop) the moment ANYTHING triggered a Reset. Every
+    // default-pool resource this proxy creates must appear on this list.
+    if (g_specTmp) { g_specTmp->Release(); g_specTmp = NULL; }
+    g_specW = g_specH = 0;
     HRESULT rhr = g_origReset(self, pp);
     // 32.74: DO NOT RESIZE THE WINDOW HERE.
     // 32.73 did, as a safety net, and the net was the whole problem. The log
