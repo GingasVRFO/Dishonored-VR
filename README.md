@@ -1,6 +1,6 @@
 # Dishonored VR
 
-A from-scratch Roomscale VR conversion of **Dishonored (2012)** — true stereo
+A from-scratch VR conversion of **Dishonored (2012)** — true stereo
 rendering, 6DOF head tracking, motion controls, roomscale, and a
 hand-aimed Blink — built as a `d3d9.dll` proxy plus a forked DXVK.
 
