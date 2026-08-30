@@ -74,7 +74,7 @@ You can adjust your hand location by pressing F10 then calibrate hands, then use
 - Hands will rotate with your Head - currently no way to fix this, it's a locked animation from Arkane, they will still track position in 6d0f by your controllers.
 - Some dynamic lights render per-eye inconsistently 
 - Some Fast-swinging thin objects (hanging chains) can shimmer between eyes
-- A few vents refuse crouch entry — slide in (sprint, then crouch)
+- A few vents and small areas are glitchy when trying to crouch under them, slide in or use Blink
 - Possession / Devouring Swarm / Windblast aim with the head (Blink is
   hand-aimed) - Will eventually work with Hand.
 - Cutscene cameras are fixed (no head-look during cinematics)
