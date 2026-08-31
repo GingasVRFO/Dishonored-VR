@@ -65,6 +65,10 @@ F10 for Overlay - Use Mouse to control it. No motion control for overlay right n
 - To get health open the weapon wheel and use B on right hand
 
 
+## New Game Tutorial
+- Current Prologue cutscene is bugged in VR with a Block so you can't progress, I have a workaround until I can fix it by skipping straight to the Prison. 
+Tutorial Video on New Game and Hand Calibration https://www.youtube.com/watch?v=ikVDL2wMIYw
+
 ## Adjusting Hands
 You can adjust your hand location by pressing F10 then calibrate hands (Use F5 to recenter first) then use the trim settings at the bottom of the Hand Section to place where you want them. After you're done, click save defaults at the top.  
 
