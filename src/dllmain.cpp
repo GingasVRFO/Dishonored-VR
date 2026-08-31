@@ -2133,6 +2133,17 @@ static void   ApplyRenderWindowSize(const char* where);
 // GetMonitorInfo via its own import table) so its windowed-resolution clamp
 // lets the user's DishonoredEngine.ini ResX/ResY through. Window, viewport,
 // UI and cursor space all agree at the big size; the capture just follows.
+// 38.91: the live backbuffer size, so the setres console script can tell
+// whether the game is ALREADY where we want it and skip itself entirely.
+// The script exists as a safety net for installs that came up at the wrong
+// resolution; on every machine that ran setup_resolution.bat the engine ini
+// already puts the game at the target, and running it anyway fires a burst
+// of device Resets a few seconds into play - measured on a user's rig going
+// 4032x1431 (aspect 2.818!) and 1600x900 before settling. A wrong aspect is
+// a wrong vertical FOV, which is exactly the "loads in looking right, then
+// switches to zoomed a couple of seconds later" report, and it happens on
+// every backend because this path is shared.
+static UINT   g_liveBbW = 0, g_liveBbH = 0;
 static UINT   g_spoofW = 0;              // [Screen] SpoofDesktopW (0 = off)
 static UINT   g_spoofH = 0;              // [Screen] SpoofDesktopH
 // 36.1: the REAL desktop window. The render never depended on it (the game
@@ -2174,7 +2185,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.90";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.91";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -16687,6 +16698,16 @@ static void IntroSkipApply()
 static void SetResApply()
 {
     if (g_setResDone || !g_forceResW || !g_forceResH) return;
+    // 38.91: already there? Then do NOTHING. No console commands, no Resets,
+    // no aspect/FOV churn seconds into play. (The client-rect lie that keeps
+    // the render at this size in a small window is untouched - only the
+    // redundant re-forcing goes away.)
+    if (g_liveBbW == g_forceResW && g_liveBbH == g_forceResH) {
+        g_setResDone = true;
+        Log("setres: the game is already at %ux%u - skipping the resolution "
+            "script entirely (no mid-session Resets)", g_liveBbW, g_liveBbH);
+        return;
+    }
     if (g_peReentry) return;
     if (!g_peCtrl || !LooksLikeObj(g_peCtrl)) return;
     static int warm = 0;
@@ -21050,6 +21071,7 @@ static HRESULT __stdcall hkReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* 
     Log("device Reset (%ux%u windowed=%d)",
         pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
         pp ? (int)pp->Windowed : -1);
+    if (pp) { g_liveBbW = pp->BackBufferWidth; g_liveBbH = pp->BackBufferHeight; }
     if (g_sysmem) { g_sysmem->Release(); g_sysmem = NULL; }
     g_capW = g_capH = 0; g_capFmt = D3DFMT_UNKNOWN;
     // 34.7: the panel's POOL_DEFAULT downscale RT must not survive a Reset
@@ -21211,6 +21233,7 @@ static HRESULT __stdcall hkCreateDevice(IDirect3D9* self, UINT adapter,
         (unsigned long)hr,
         pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
         pp ? (int)pp->Windowed : -1);
+    if (pp) { g_liveBbW = pp->BackBufferWidth; g_liveBbH = pp->BackBufferHeight; }
     if (SUCCEEDED(hr) && outDev && *outDev) {
         g_gameWnd = wnd ? wnd : (pp ? pp->hDeviceWindow : NULL);
         void* oldPresent = PatchVtable(*outDev, 17, (void*)hkPresent);
