@@ -333,6 +333,10 @@ static DWORD         g_presentTid = 0;
 // warp's anchor removed; exact tan-linear content mapping).
 static int           g_xrFrustumFill = 1;
 static bool     g_xrOn = false;           // session live and frames flowing
+// 38.78: while a headset is served, the game never learns the desktop window
+// lost focus (see OverlayWndProc). [Screen] KeepAliveUnfocused=0 restores the
+// stock pause-on-focus-loss behavior.
+static bool     g_vrKeepAlive = true;
 static uint32_t g_xrEyeW = 0, g_xrEyeH = 0;   // runtime-recommended per eye
 // 37.6: rigid single-screen construction on the OPENVR path too, keyed to
 // the HMD model - Quest-family lenses are strongly canted and per-eye
@@ -2114,7 +2118,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.77";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.78";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -2985,6 +2989,7 @@ static void LoadConfig()
         if (g_xrPoseDelay > 3) g_xrPoseDelay = 3;
         g_xrHaptics = GetPrivateProfileIntA("VR", "XrHaptics", 1, ini) != 0; // 38.10
         g_xrFrustumFill = GetPrivateProfileIntA("Screen", "XrFrustumFill", 1, ini) != 0; // 38.13
+        g_vrKeepAlive = GetPrivateProfileIntA("Screen", "KeepAliveUnfocused", 1, ini) != 0; // 38.78
         g_fpsCap = IniFloat(ini, "VR", "FpsCap", 0.0f);                  // 38.14
         if (g_fpsCap < 0.0f) g_fpsCap = 0.0f;
         if (g_fpsCap > 0.0f && g_fpsCap < 20.0f)  g_fpsCap = 20.0f;
@@ -4126,6 +4131,27 @@ static WNDPROC  g_ovlOldWndProc = NULL;
 
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    // 38.78 THE QUEST "BAM, BROKEN" STATE, from an affected user's log: the
+    // game window lost desktop focus (Virtual Desktop's overlay takes the
+    // foreground; the player is in the headset and nobody is at the desk to
+    // click the game back). UE3 then fires OnLostFocusPause, auto-pauses,
+    // and stops BOTH input polling and ProcessViewRotation - measured as
+    // pad polls=0 and headwrites=0 for the rest of the session while the
+    // render kept flowing at 66 fps: frozen head-locked view, dead
+    // controllers, "hands not working". The old focus guard only reclaims
+    // focus from SteamVR-titled windows on purpose (a desktop user who
+    // alt-tabs must be left alone), so instead of fighting over the
+    // foreground, the game simply never learns it lost it: while a headset
+    // is being served, deactivation messages are rewritten to "active".
+    // Alt-tab still works on the desktop - the game just keeps running.
+    if (g_vrKeepAlive && (g_vrReady || g_xrOn)) {
+        if (msg == WM_ACTIVATEAPP && wp == FALSE)
+            wp = TRUE;
+        else if (msg == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE)
+            wp = MAKEWPARAM(WA_ACTIVE, HIWORD(wp));
+        else if (msg == WM_KILLFOCUS)
+            return 0;                     // the game never hears it
+    }
     // Windows asks the window how big it may get, and the default answer is
     // "no bigger than the monitor". We render past the edge of the screen on
     // purpose, so raise the ceiling. The game's own handler runs first and we
