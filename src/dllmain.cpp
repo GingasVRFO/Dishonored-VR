@@ -337,6 +337,37 @@ static bool     g_xrOn = false;           // session live and frames flowing
 // lost focus (see OverlayWndProc). [Screen] KeepAliveUnfocused=0 restores the
 // stock pause-on-focus-loss behavior.
 static bool     g_vrKeepAlive = true;
+// 38.84 STAMP WHAT YOU RENDERED - the pitch fix for machines where the
+// engine ignores our rotator pitch (render never pitches although the
+// rotator follows the head; measured on several Quest+VD machines across
+// three runtimes). The XR layer stamp is corrected so it equals the pose
+// the content was RENDERED from: renderPitch comes from the fork's new
+// dxvk_vr_view export (the VP's w-row = unit world forward; UE3 world is
+// Z-up so pitch = asin(fwd.z)). Where render == head the correction is
+// identically zero - healthy machines see no change. [VR] StampFix:
+// 0 = off (default), 1 = apply delta, 2 = apply flipped delta (sign
+// conventions are the untestable-from-here risk; the overlay cycles all
+// three LIVE so one session answers it).
+static int g_stampFix = 0;
+// 38.88: [HeadTrack] ChainStamp - 1 (code default) = stamp every modifier
+// dispatch in the chain pass with the same values (the 38.86 order-proof
+// fix for rigs where the surviving modifier shuffles per load). 0 = the
+// EXACT pre-38.86 behavior: one write to the first dispatch per presented
+// frame, later stages (bob/sway/shake) untouched - the path proven smooth
+// for months on the dev rig, which stuttered under chain stamping.
+static int g_chainStamp = 1;
+// 38.89: [VR] StampLive - 1 (default) = stamp the XR projection layer with
+// the head pose located THIS submit, not the pose the content was rendered
+// from. Why: our content already carries the head rotation (the game camera
+// follows the head 1:1), so a stamp that disagrees with the current head
+// makes the compositor warp the image back by the difference - it cancels
+// exactly the head motion the render just applied ("I can look up and down
+// for a few seconds after load, then it locks" = the seconds before head
+// injection starts, measured in the user's log: hw=0 while it works,
+// hw=200 the moment it breaks). Stamping the live pose cannot cancel:
+// worst case the image is a few ms old. 0 = the old render-pose stamp
+// (marginally smoother reprojection on rigs where it was already right).
+static int g_stampLive = 1;
 // 38.79: set when the game announces shutdown (PreExit/GameSessionEnded on
 // a real exit); every VR path stands down so teardown can't crash under us.
 static volatile LONG g_gameExiting = 0;
@@ -1725,6 +1756,8 @@ static volatile unsigned int* g_dxvkSplices = NULL; // fork's per-frame stereo
                                            // draw count (dxvk_vr_splices)
 static volatile float* g_dxvkProj = NULL;  // 30.36: fork's live projection
                                            // scales [xs, ys] of the main VP
+static volatile float* g_dxvkView = NULL;  // p53: main camera world FORWARD
+                                           // [0..2] + freshness counter [3]
 static volatile float* g_dxvkSep  = NULL;  // 30.37: fork's live stereo
 static volatile float* g_dxvkConv = NULL;  //        separation / convergence
 // 32.6/M3.8: write 1 and the fork dumps the NEXT frame's draws with a splice
@@ -1995,16 +2028,34 @@ static bool g_fireTraceEnabled = true;     // ini [Debug] FireTrace
 // ----------------------------------------------------------------------------
 // Logging
 // ----------------------------------------------------------------------------
+// 38.90 THE MICROSTUTTER. This used to fflush EVERY line - a synchronous
+// disk write, holding the log lock, on the game thread. Measured on the dev
+// rig: 54 lines inside ONE frame (NPC volume/BaseChange bursts), i.e. 54
+// blocking disk flushes in a single frame. That is a guaranteed hitch, and
+// it scales with how many actors move at once - which is why it reads as
+// random microstutter. Now the stream is buffered and flushed at most 5x a
+// second; LogFlush() forces one where losing the tail would matter (crash
+// handler, shutdown). Worst case on a hard kill: the last <200 ms of log.
+static DWORD g_logFlushTick = 0;
 static void Log(const char* fmt, ...)
 {
     if (!g_log) return;
     EnterCriticalSection(&g_logLock);
-    fprintf(g_log, "[%10lu] ", (unsigned long)GetTickCount());
+    DWORD now = GetTickCount();
+    fprintf(g_log, "[%10lu] ", (unsigned long)now);
     va_list ap; va_start(ap, fmt);
     vfprintf(g_log, fmt, ap);
     va_end(ap);
     fprintf(g_log, "\n");
+    if (now - g_logFlushTick >= 200) { fflush(g_log); g_logFlushTick = now; }
+    LeaveCriticalSection(&g_logLock);
+}
+static void LogFlush(void)
+{
+    if (!g_log) return;
+    EnterCriticalSection(&g_logLock);
     fflush(g_log);
+    g_logFlushTick = GetTickCount();
     LeaveCriticalSection(&g_logLock);
 }
 
@@ -2123,7 +2174,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.83";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.90";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -2995,6 +3046,10 @@ static void LoadConfig()
         g_xrHaptics = GetPrivateProfileIntA("VR", "XrHaptics", 1, ini) != 0; // 38.10
         g_xrFrustumFill = GetPrivateProfileIntA("Screen", "XrFrustumFill", 1, ini) != 0; // 38.13
         g_vrKeepAlive = GetPrivateProfileIntA("Screen", "KeepAliveUnfocused", 1, ini) != 0; // 38.78
+        g_stampFix = GetPrivateProfileIntA("VR", "StampFix", 0, ini);    // 38.84
+        if (g_stampFix < 0 || g_stampFix > 2) g_stampFix = 0;
+        g_chainStamp = GetPrivateProfileIntA("HeadTrack", "ChainStamp", 1, ini) != 0; // 38.88
+        g_stampLive  = GetPrivateProfileIntA("VR", "StampLive", 1, ini) != 0;         // 38.89
         g_fpsCap = IniFloat(ini, "VR", "FpsCap", 0.0f);                  // 38.14
         if (g_fpsCap < 0.0f) g_fpsCap = 0.0f;
         if (g_fpsCap > 0.0f && g_fpsCap < 20.0f)  g_fpsCap = 20.0f;
@@ -4215,6 +4270,8 @@ static void OverlaySaveDefaults()
     // 38.80: persist the headset display mode chosen on the overlay
     WritePrivateProfileStringA("VR", "XrLayer",
         g_xrLayerMode == 1 ? "cyl" : g_xrLayerMode == 2 ? "quad" : "proj", ini);
+    _snprintf(v, 64, "%d", g_stampFix);              // 38.84
+    WritePrivateProfileStringA("VR", "StampFix", v, ini);
     _snprintf(v, 64, "%.2f", g_zoomFillFloor);        // 30.53
     WritePrivateProfileStringA("Screen", "ZoomFillFloor", v, ini);
     // 30.70: the hand drive's live-tuned values, so a good calibration sticks
@@ -4632,6 +4689,15 @@ static void OverlayFrame()
                 g_xrLayerMode == 1 ? "CYLINDER" : "PROJECTION");
         }
         ImGui::TextDisabled("image frozen in place or zoomed? press the bar above");
+        // 38.84: the pitch-fix test cycle - live, no relaunch. OFF -> A -> B.
+        const char* sfLabel = g_stampFix == 0
+            ? "PITCH FIX: OFF  (can't look up/down? try A)"
+            : g_stampFix == 1 ? "PITCH FIX: MODE A  (worse/reversed? try B)"
+                              : "PITCH FIX: MODE B  (press to turn off)";
+        if (ImGui::Button(sfLabel, ImVec2(-1, 0))) {
+            g_stampFix = (g_stampFix + 1) % 3;
+            Log("xr: stampfix mode -> %d (overlay)", g_stampFix);
+        }
     }
     // 32.68: SAVE directly under RECENTER, and everything below it tabbed.
     // Re-applied onto the stable 32.52 base after the resolution work was
@@ -15803,11 +15869,47 @@ static void ApplyHeadToViewRotation(void* parms)
             rotOff, rot[0], rot[1]);
     }
 
-    // one application per rendered frame — the engine calls this once per
-    // camera modifier, and we must not stack the same delta several times
-    static uint32_t lastFrame = 0xffffffffu;
-    if (g_frame == lastFrame) return;
-    lastFrame = g_frame;
+    // one DELTA application per rendered frame - but the engine calls this
+    // once per CAMERA MODIFIER, and only the modifier whose out-value
+    // survives the chain reaches the screen. Which one that is depends on
+    // the modifier list order REBUILT AT EVERY LEVEL LOAD - the per-load
+    // coin flip behind a week of "pitch dead on some machines, F9 flips it"
+    // (Beardo's discovery). 38.86: the first dispatch of a frame computes
+    // the target rotation (yaw delta folded in ONCE); every further
+    // dispatch in the same frame gets the SAME absolute values stamped, so
+    // whichever modifier the chain listens to is carrying our numbers.
+    // 38.87: grouping by PRESENTED frame stuttered on rigs where the game
+    // ticks more than once per present - the second tick's dispatches were
+    // overwritten with the first tick's remembered rotation, so the camera
+    // alternated fresh/stale = judder (measured on the dev rig the hour
+    // 38.86 shipped). The chain pass we must blanket completes in
+    // MICROSECONDS; a real new tick is milliseconds later. Group by TIME:
+    // re-stamp the same absolutes only within 2 ms of the primary write;
+    // anything later recomputes (safe: each application folds only the head
+    // movement since the last one).
+    static double  frWriteMs = -1.0e9;
+    static int32_t frP = 0, frY = 0, frR = 0;
+    static bool    frHave = false;
+    double frNow = MaimNowMs();
+    if (!g_chainStamp) {
+        // 38.88: ChainStamp=0 - the exact pre-38.86 path. One write to the
+        // first dispatch per presented frame; every later dispatch of the
+        // chain is left alone.
+        static uint32_t lastFrameOld = 0xffffffffu;
+        if (g_frame == lastFrameOld) return;
+        lastFrameOld = g_frame;
+    } else if (frNow - frWriteMs < 2.0) {
+        if (frHave) {
+            rot[0] = frP; rot[1] = frY;
+            if (g_rotRoll) rot[2] = frR;
+            InterlockedIncrement(&g_pvrWrites);
+            g_scriptHeadOK = true;
+            g_scriptHeadMs = frNow;
+            g_fbPvrSince   = 1;
+        }
+        return;
+    }
+    frHave = false;
 
     static float prevYaw = 0, prevPitch = 0;
     static bool  havePrev = false;
@@ -15837,6 +15939,9 @@ static void ApplyHeadToViewRotation(void* parms)
     rot[0] = wantPitch;
 
     if (g_rotRoll) rot[2] = (int32_t)(g_hmdRoll * kUEPerRad * (float)g_flipRoll);
+    frP = rot[0]; frY = rot[1];                       // 38.86/87: this chain
+    frR = g_rotRoll ? rot[2] : 0; frHave = true;      // pass's values
+    frWriteMs = MaimNowMs();
     InterlockedIncrement(&g_pvrWrites);   // 30.57: writes that actually landed
     g_scriptHeadOK = true;
     g_scriptHeadMs = MaimNowMs();
@@ -16681,6 +16786,29 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
         if (f && !((uintptr_t)f & 3) && RangeReadable(f, kNameOff + 8) &&
             *(uint32_t*)(f + kNameOff) == g_idxViewRot) {
             InterlockedIncrement(&g_pvrHits);   // 30.37b: head-write telemetry
+            // 38.85 THE PITCH COIN FLIP, finally. ProcessViewRotation is
+            // dispatched by SEVERAL objects each frame: the PlayerController
+            // (whose rotator the engine USES) and its camera modifiers
+            // (CameraShake et al - their out-rotator is discarded while the
+            // modifier is inactive). The one-write-per-frame gate in
+            // ApplyHeadToViewRotation bound our head write to WHICHEVER
+            // fired FIRST, and that order is set by the modifier list
+            // rebuilt at every level load - a per-load coin flip. Machines
+            // that ordered controller-first always worked (this dev rig);
+            // machines that shuffled got "pitch dead, writes landing"
+            // (rotator values track the head IN THE DISCARDED PARMS), and
+            // a quickload flipped the state - measured by a user: F9
+            // toggled "look works" <-> on every reload. The write now goes
+            // ONLY to the latched PlayerController's own dispatch; if no
+            // controller is latched yet, the old first-dispatch behavior
+            // carries until it is.
+            // 38.86: the 38.85 controller gate was WRONG - the engine
+            // dispatches this event only through the camera MODIFIER chain
+            // (every vocab ever logged says CameraModifier_CameraShake), so
+            // gating on the controller silenced head writes outright
+            // (measured: "inverted and stays in the middle" = a static
+            // camera under the world-locking layer). Ungated again; the
+            // order-proofing lives inside ApplyHeadToViewRotation now.
             if (g_rotInject) ApplyHeadToViewRotation(a2);
             ApplyHandToMesh();
             return;
@@ -16867,6 +16995,7 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
                     InterlockedExchange(&g_xrRun, 0);   // pace thread exits
                     Log("shutdown: game PreExit - VR paths standing down "
                         "(no more submits, pace thread stopping)");
+                    LogFlush();          // 38.90: buffered log - land it now
                 }
                 // 38.67 BOAT-DEATH FORENSICS - log only, no behavior change.
                 // Three runs died identically with three theories eliminated
@@ -16877,7 +17006,15 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
                 // and the volume events decode the pawn argument. One run of
                 // this says who falls, from where, and whether it is the
                 // player pawn (g_pePawn) or a scripted stand-in.
-                if (!strcmp(nm, "PawnEnteredVolume")  ||
+                // 38.90: the 38.67 boat-death forensics are DEV-ONLY now.
+                // They fire on BaseChange/volume events - i.e. constantly,
+                // once per NPC per transition - and each one cost a class
+                // lookup, a name lookup and a log line (which used to be a
+                // disk flush). That burst was the microstutter. The boat is
+                // handled by the intro skip; turn [Overlay] DevTools=1 on
+                // to get them back for the real seat-in fix.
+                if (g_ovlDev &&
+                   (!strcmp(nm, "PawnEnteredVolume")  ||
                     !strcmp(nm, "PawnLeavingVolume")  ||
                     !strcmp(nm, "ChooseAndTriggerDeathEvent") ||
                     !strcmp(nm, "PlayDying")          ||
@@ -16889,7 +17026,7 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
                     !strcmp(nm, "OnNPCMarkForVanish") ||
                     !strcmp(nm, "Dis_ExitKeyhole")    ||
                     !strcmp(nm, "OnObjectiveAction")  ||
-                    !strcmp(nm, "OnToggleCinematicMode")) {
+                    !strcmp(nm, "OnToggleCinematicMode"))) {
                     char loc[64]; strcpy(loc, "loc=?");
                     uint8_t* ob = (uint8_t*)obj;
                     if (g_actorLocFound && RangeReadable(ob + g_actorLocOff, 12)) {
@@ -20083,6 +20220,8 @@ static void VRFrame(IDirect3DDevice9* dev)
                         GetProcAddress(hFork, "dxvk_vr_splices");
                     g_dxvkProj = (volatile float*)
                         GetProcAddress(hFork, "dxvk_vr_proj");
+                    g_dxvkView = (volatile float*)
+                        GetProcAddress(hFork, "dxvk_vr_view");   // p53
                     g_dxvkSep = (volatile float*)
                         GetProcAddress(hFork, "dxvk_vr_sep");
                     g_dxvkConv = (volatile float*)
@@ -21652,6 +21791,7 @@ static LONG WINAPI XrVeh(EXCEPTION_POINTERS* ep)
                 }
             }
         }
+        LogFlush();   // 38.90: the log is buffered now - never lose a crash
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -22297,14 +22437,72 @@ static DWORD WINAPI XrPaceThread(LPVOID)
         // published views are stale (the locate->ring->publish chain
         // stalled somewhere), stamp THIS frame's freshly located views -
         // already in hand from the top of this loop - instead.
-        if (proj && poseOk && pubAgeMs > 250.0) {
+        if (proj && poseOk && (g_stampLive || pubAgeMs > 250.0)) {
             memcpy(pv2, views, sizeof(pv2));
+            static bool liveSaid = false;
+            if (g_stampLive && !liveSaid) {
+                liveSaid = true;
+                Log("xr: layer stamped with the LIVE head pose (StampLive=1) - "
+                    "the compositor cannot cancel the head motion the render "
+                    "already applied");
+            }
             static double staleSaidMs = 0.0;
             double ssn = MaimNowMs();
-            if (ssn - staleSaidMs > 10000.0) {
+            if (!g_stampLive && ssn - staleSaidMs > 10000.0) {
                 staleSaidMs = ssn;
                 Log("xr: published view stamp STALE (%.0f ms) - layer stamped "
                     "with live views instead (frozen-image guard)", pubAgeMs);
+            }
+        }
+        // 38.84 STAMP WHAT YOU RENDERED (see the g_stampFix note). The
+        // render's true pitch comes from the fork; the stamp's pitch from
+        // its own quaternion (XR: Y up, -Z forward). If they diverge, the
+        // stamp is rotated about its LOCAL X by the delta so the compositor
+        // places the image where the game actually drew it - head pitch
+        // then works at compositor level even when the engine ignored the
+        // rotator. Gated: mode on, fork export FRESH (menus stop updating
+        // it), delta between 2 and 60 degrees.
+        if (proj && g_stampFix && g_dxvkView) {
+            static float  sfSeq = -1.0f;
+            static double sfSeqMs = 0.0;
+            float seqNow = g_dxvkView[3];
+            double sfNow = MaimNowMs();
+            if (seqNow != sfSeq) { sfSeq = seqNow; sfSeqMs = sfNow; }
+            if (sfNow - sfSeqMs < 500.0) {           // export is live
+                float fz = g_dxvkView[2];
+                if (fz >  1.0f) fz =  1.0f;
+                if (fz < -1.0f) fz = -1.0f;
+                float renderPitch = asinf(fz);       // UE3 world: Z is up
+                XrQuaternionf hq = pv2[0].pose.orientation;
+                float fy = 2.0f * (hq.w * hq.x - hq.y * hq.z);
+                if (fy >  1.0f) fy =  1.0f;
+                if (fy < -1.0f) fy = -1.0f;
+                float headPitch = asinf(fy);         // XR: fwd=-Z, up=+Y
+                float delta = renderPitch - headPitch;
+                if (g_stampFix == 2) delta = -delta;
+                float ad = delta < 0 ? -delta : delta;
+                if (ad > 0.035f && ad < 1.05f) {     // 2..60 deg
+                    float ha = 0.5f * delta;
+                    XrQuaternionf r; r.x = sinf(ha); r.y = 0; r.z = 0;
+                    r.w = cosf(ha);
+                    for (int se = 0; se < 2; se++) {
+                        XrQuaternionf a = pv2[se].pose.orientation;
+                        XrQuaternionf o;
+                        o.x = a.w*r.x + a.x*r.w + a.y*r.z - a.z*r.y;
+                        o.y = a.w*r.y - a.x*r.z + a.y*r.w + a.z*r.x;
+                        o.z = a.w*r.z + a.x*r.y - a.y*r.x + a.z*r.w;
+                        o.w = a.w*r.w - a.x*r.x - a.y*r.y - a.z*r.z;
+                        pv2[se].pose.orientation = o;
+                    }
+                    static double sfSaidMs = 0.0;
+                    if (sfNow - sfSaidMs > 10000.0) {
+                        sfSaidMs = sfNow;
+                        Log("xr: stampfix %d ACTIVE render=%.1f deg head=%.1f "
+                            "deg delta=%.1f deg", g_stampFix,
+                            renderPitch * 57.2958f, headPitch * 57.2958f,
+                            delta * 57.2958f);
+                    }
+                }
             }
         }
         if (proj && g_xrShownOnce[0] && g_xrShownOnce[1]) {
