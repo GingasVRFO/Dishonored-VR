@@ -337,6 +337,11 @@ static bool     g_xrOn = false;           // session live and frames flowing
 // lost focus (see OverlayWndProc). [Screen] KeepAliveUnfocused=0 restores the
 // stock pause-on-focus-loss behavior.
 static bool     g_vrKeepAlive = true;
+// 38.79: set when the game announces shutdown (PreExit/GameSessionEnded on
+// a real exit); every VR path stands down so teardown can't crash under us.
+static volatile LONG g_gameExiting = 0;
+// (moved up from the XR block so the PreExit handler can stop the pace thread)
+static volatile LONG g_xrRun = 0;
 static uint32_t g_xrEyeW = 0, g_xrEyeH = 0;   // runtime-recommended per eye
 // 37.6: rigid single-screen construction on the OPENVR path too, keyed to
 // the HMD model - Quest-family lenses are strongly canted and per-eye
@@ -2118,7 +2123,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.78";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.79";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -16827,6 +16832,17 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
                         g_cineNow ? "ON" : "off",
                         g_cineNow ? "PARKED (pause still works)" : "live");
                 }
+                // 38.79: the game is exiting for real (PreExit fires only on
+                // process shutdown, never on quit-to-menu). Stand every VR
+                // path down NOW so teardown can't call through freed memory
+                // (the measured exit crash: EIP dededede after PreExit).
+                if (!strcmp(nm, "PreExit") &&
+                    !InterlockedCompareExchange(&g_gameExiting, 0, 0)) {
+                    InterlockedExchange(&g_gameExiting, 1);
+                    InterlockedExchange(&g_xrRun, 0);   // pace thread exits
+                    Log("shutdown: game PreExit - VR paths standing down "
+                        "(no more submits, pace thread stopping)");
+                }
                 // 38.67 BOAT-DEATH FORENSICS - log only, no behavior change.
                 // Three runs died identically with three theories eliminated
                 // (synthesized inputs parked, keyhole untouched, real movie
@@ -20316,6 +20332,13 @@ static void RenderSizeTick()
 static HRESULT __stdcall hkPresent(IDirect3DDevice9* self, const RECT* src,
                                    const RECT* dst, HWND wnd, const RGNDATA* dirty)
 {
+    // 38.79: once the game has announced shutdown, our VR work stands down
+    // completely - an affected user's log ended in "xr: EXCEPTION 0xc0000005
+    // at dededede" (a call through freed memory) AFTER GameSessionEnded/
+    // PreExit, i.e. a crash dialog on every quit. Nothing of ours may touch
+    // the dying device or the XR session past that point.
+    if (InterlockedCompareExchange(&g_gameExiting, 0, 0))
+        return g_origPresent(self, src, dst, wnd, dirty);
     RenderSizeTick();
 
     // 38.17: the crash fingerprinter now guards BOTH backends. Tonight's
@@ -21207,7 +21230,7 @@ static struct {
 // the Vive-parity experience (head-locked stereo window + injected head-look).
 static XrSpace          g_xriViewSpace = XR_NULL_HANDLE;
 static HANDLE           g_xrThread = NULL;
-static volatile LONG    g_xrRun = 0;
+// (g_xrRun moved to the top globals for the 38.79 PreExit shutdown hook)
 // (g_xrCs/g_xrCsInit live in the top XR block since 38.9 - the pad composer
 // needs them long before this point in the file)
 static ID3D11Texture2D* g_xrpTex[2] = { NULL, NULL };  // published content
