@@ -1618,6 +1618,8 @@ static bool   g_introSkipDone    = false;
 // is declared failed and any cine latch it raised is cleared.
 static double g_introSkipFiredMs = 0.0;
 static bool   g_introSkipJudged  = false;
+static int    g_introSkipTries   = 0;      // 38.72: fires, max 3
+static double g_introSkipRetryMs = 0.0;
 static int g_swarmAim    = 1;         // 38.55: [MotionAim] SwarmAim
 static bool g_wristHud = true;                      // [Hud] WristHud
 // 38.47: the user's own idea, and a better one than the front-board and the
@@ -2111,7 +2113,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.71";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.72";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -16397,39 +16399,67 @@ static void IntroSkipApply()
     double now = MaimNowMs();
     // 38.71: judge a fired skip - a transition that took gives a NEW pawn
     // latch; one that half-fired must not leave the controllers parked.
+    // 38.72: the verdict is POSITIONAL. The working transition is a streaming
+    // level change - the pawn pointer survives it (measured: same pawn,
+    // teleported 29000 uu to a staging point within 2.5 s, then the cell),
+    // so "new pawn latch" judged a successful jump as failed. TOOK = the pawn
+    // is far from the boat; DID NOT TAKE = still on the boat after 15 s, and
+    // then it is fired again (3 tries) - slow machines need the level's
+    // Kismet to finish streaming before the receiver exists.
+    const float kBoatX = -3901.0f, kBoatY = 36639.0f, kBoatZ = -225.0f;
     if (g_introSkipDone) {
         if (g_introSkipJudged || g_introSkipFiredMs <= 0.0) return;
-        if (g_fbPawnMs > g_introSkipFiredMs) {
+        bool isFar = false, isNear = false;
+        if (g_pePawn && g_actorLocFound &&
+            RangeReadable(g_pePawn + g_actorLocOff, 12)) {
+            const float* P = (const float*)(g_pePawn + g_actorLocOff);
+            float ddx = P[0] - kBoatX, ddy = P[1] - kBoatY;
+            float d2 = ddx * ddx + ddy * ddy;
+            isFar  = d2 > 15000.0f * 15000.0f;
+            isNear = d2 < 6000.0f * 6000.0f;
+        }
+        if (isFar || g_fbPawnMs > g_introSkipFiredMs) {
             g_introSkipJudged = true;
-            Log("introskip: transition TOOK (new pawn after the jump)");
+            Log("introskip: transition TOOK (pawn left the boat area)");
         } else if (now - g_introSkipFiredMs > 15000.0) {
             g_introSkipJudged = true;
-            Log("introskip: transition DID NOT TAKE (no level change in 15s)");
+            Log("introskip: transition DID NOT TAKE (still at the boat after "
+                "15s, try %d of 3)", g_introSkipTries);
             if (g_cineNow && g_cineOnMs >= g_introSkipFiredMs) {
                 g_cineNow = false;
                 Log("cine: latch cleared - it was raised by the failed skip, "
                     "inputs live again");
             }
+            if (isNear && g_introSkipTries < 3) {
+                g_introSkipDone   = false;      // re-arm: fire again shortly
+                g_introSkipJudged = false;
+                g_introSkipRetryMs = now + 3000.0;
+                Log("introskip: retrying in 3 s");
+            }
         }
         return;
     }
     if (!g_pePawn || !CylTruthLive()) return;   // no live level yet
-    if (g_fbPawnMs <= 0.0 || now - g_fbPawnMs < (double)g_introSkipDelayMs)
-        return;
     if (!g_actorLocFound || !RangeReadable(g_pePawn + g_actorLocOff, 12))
         return;                       // offset not found yet - retry next tick
-    // one position check per pawn latch, and only once a position was read
-    static double checkedLatch = -1.0;
-    if (g_fbPawnMs == checkedLatch) return;
-    checkedLatch = g_fbPawnMs;
-    const float* L = (const float*)(g_pePawn + g_actorLocOff);
-    float dx = L[0] - (-3901.0f), dy = L[1] - 36639.0f;
-    float dz = L[2] - (-225.0f);
-    if (dx * dx + dy * dy > 4000.0f * 4000.0f || dz > 1000.0f || dz < -1000.0f) {
-        Log("introskip: pawn at (%.0f,%.0f,%.1f) is not the intro boat - "
-            "no skip", L[0], L[1], L[2]);
-        return;
+    if (g_introSkipTries == 0) {
+        if (g_fbPawnMs <= 0.0 || now - g_fbPawnMs < (double)g_introSkipDelayMs)
+            return;
+        // one position check per pawn latch, once a position was read
+        static double checkedLatch = -1.0;
+        if (g_fbPawnMs == checkedLatch) return;
+        checkedLatch = g_fbPawnMs;
+        const float* L = (const float*)(g_pePawn + g_actorLocOff);
+        float dx = L[0] - kBoatX, dy = L[1] - kBoatY, dz = L[2] - kBoatZ;
+        if (dx * dx + dy * dy > 4000.0f * 4000.0f || dz > 1000.0f || dz < -1000.0f) {
+            Log("introskip: pawn at (%.0f,%.0f,%.1f) is not the intro boat - "
+                "no skip", L[0], L[1], L[2]);
+            return;
+        }
+    } else {
+        if (now < g_introSkipRetryMs) return;   // a retry, already at the boat
     }
+    g_introSkipTries++;
     g_introSkipDone  = true;
     g_introSkipFiredMs = now;
     const wchar_t* cmd = (g_introSkip == 1)
@@ -16437,9 +16467,9 @@ static void IntroSkipApply()
         : L"ce ChangeLvl_fromTower_toPrison";
     char reply[256];
     RunConsole(cmd, reply, sizeof(reply));
-    Log("introskip: FIRED dev transition %d (%s) -> \"%s\" - jumping past "
-        "the broken boat arrival", g_introSkip,
-        g_introSkip == 1 ? "to Dunwall Tower" : "to Prison",
+    Log("introskip: FIRED dev transition %d (%s), try %d -> \"%s\" - jumping "
+        "past the broken boat arrival", g_introSkip,
+        g_introSkip == 1 ? "to Dunwall Tower" : "to Prison", g_introSkipTries,
         reply[0] ? reply : "(empty reply)");
 }
 
