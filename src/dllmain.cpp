@@ -1608,7 +1608,7 @@ static int g_killMaskIni = 0;         // [Debug] KillMask
 // Armed only by a real New Game click; fires once, after the intro pawn
 // has been up for IntroSkipDelayMs.
 static int    g_introSkip        = 0;      // [Debug] IntroSkip
-static int    g_introSkipDelayMs = 6000;   // [Debug] IntroSkipDelayMs
+static int    g_introSkipDelayMs = 8000;   // [Debug] IntroSkipDelayMs
 static bool   g_introSkipDone    = false;
 // 38.71: transition 1 half-fired from the boat: the Kismet event exists but
 // its receiver is wired for a prison->tower trip, so it raised cinematic
@@ -2113,7 +2113,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.72";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.74";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -2892,7 +2892,7 @@ static void LoadConfig()
     if (g_killMaskIni > 63) g_killMaskIni = 63;
     g_introSkip = (int)IniFloat(ini, "Debug", "IntroSkip", 0);    // 38.69
     if (g_introSkip < 0 || g_introSkip > 2) g_introSkip = 0;
-    g_introSkipDelayMs = (int)IniFloat(ini, "Debug", "IntroSkipDelayMs", 6000);
+    g_introSkipDelayMs = (int)IniFloat(ini, "Debug", "IntroSkipDelayMs", 8000);
     if (g_introSkipDelayMs < 1000)  g_introSkipDelayMs = 1000;
     if (g_introSkipDelayMs > 60000) g_introSkipDelayMs = 60000;
     g_meleeOn     = IniFloat(ini, "Melee", "Enabled", 1) != 0.0f;
@@ -16443,19 +16443,46 @@ static void IntroSkipApply()
     if (!g_actorLocFound || !RangeReadable(g_pePawn + g_actorLocOff, 12))
         return;                       // offset not found yet - retry next tick
     if (g_introSkipTries == 0) {
-        if (g_fbPawnMs <= 0.0 || now - g_fbPawnMs < (double)g_introSkipDelayMs)
-            return;
-        // one position check per pawn latch, once a position was read
-        static double checkedLatch = -1.0;
-        if (g_fbPawnMs == checkedLatch) return;
-        checkedLatch = g_fbPawnMs;
+        if (g_fbPawnMs <= 0.0 || now - g_fbPawnMs < 1000.0) return;
+        // 38.73: POLL, don't check once. A single check at DelayMs missed a
+        // run where the pawn was still at the engine's pre-placement spot
+        // (0,500,-200) 6 s after latch (measured: "pawn at (0,500,-208.8) is
+        // not the intro boat") - it reached the boat later and the one shot
+        // was already spent. Now: every 500 ms for 90 s after the latch;
+        // fire the moment the pawn is at the boat, give up (logged once) if
+        // it never is. A mid-game load never comes near that coordinate.
+        static double pollLatch = -1.0, pollNext = 0.0, atBoatMs = 0.0;
+        static bool   gaveUp = false;
+        if (g_fbPawnMs != pollLatch) {
+            pollLatch = g_fbPawnMs; pollNext = 0.0; gaveUp = false; atBoatMs = 0.0;
+        }
+        if (gaveUp || now < pollNext) return;
+        pollNext = now + 500.0;
         const float* L = (const float*)(g_pePawn + g_actorLocOff);
         float dx = L[0] - kBoatX, dy = L[1] - kBoatY, dz = L[2] - kBoatZ;
         if (dx * dx + dy * dy > 4000.0f * 4000.0f || dz > 1000.0f || dz < -1000.0f) {
-            Log("introskip: pawn at (%.0f,%.0f,%.1f) is not the intro boat - "
-                "no skip", L[0], L[1], L[2]);
+            if (now - g_fbPawnMs > 90000.0) {
+                gaveUp = true;
+                Log("introskip: pawn at (%.0f,%.0f,%.1f) never reached the intro "
+                    "boat in 90 s - not a new game, no skip", L[0], L[1], L[2]);
+            }
             return;
         }
+        // 38.74: the delay counts from PLACEMENT at the boat, not from the
+        // latch. Firing 6 s after latch produced one run with a screen that
+        // stayed black in the cell while everything else (events, stereo
+        // splices, pause menu, movement) matched the working runs line for
+        // line - the one thing that varies between runs is when the pawn is
+        // placed (3.4 s vs >6 s after latch), i.e. where the intro's own
+        // fade-in is when we fire. Waiting DelayMs after placement keeps the
+        // transition clear of the intro's fade.
+        if (atBoatMs <= 0.0) {
+            atBoatMs = now;
+            Log("introskip: pawn at the intro boat (%.0f,%.0f,%.1f) %.1f s after "
+                "latch - firing in %d ms", L[0], L[1], L[2],
+                (now - g_fbPawnMs) * 0.001, g_introSkipDelayMs);
+        }
+        if (now - atBoatMs < (double)g_introSkipDelayMs) return;
     } else {
         if (now < g_introSkipRetryMs) return;   // a retry, already at the boat
     }
