@@ -2123,7 +2123,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.79";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.83";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -4212,6 +4212,9 @@ static void OverlaySaveDefaults()
     WritePrivateProfileStringA("Hud", "PanelSize", v, ini);
     _snprintf(v, 64, "%.0f", (float)g_fovLever);      // 30.51: persist the lever
     WritePrivateProfileStringA("Screen", "FovLever", v, ini);
+    // 38.80: persist the headset display mode chosen on the overlay
+    WritePrivateProfileStringA("VR", "XrLayer",
+        g_xrLayerMode == 1 ? "cyl" : g_xrLayerMode == 2 ? "quad" : "proj", ini);
     _snprintf(v, 64, "%.2f", g_zoomFillFloor);        // 30.53
     WritePrivateProfileStringA("Screen", "ZoomFillFloor", v, ini);
     // 30.70: the hand drive's live-tuned values, so a good calibration sticks
@@ -4607,6 +4610,28 @@ static void OverlayFrame()
             *g_dxvkKillMask = 0;
             Log("killmask: cleared");
         }
+    }
+    // 38.80: HEADSET DISPLAY MODE - player-visible, LIVE, Quest/OpenXR only.
+    // Several Quest+VD machines show the projection layer head-locked in
+    // pitch ("image fixed and moves with me", "zoomed") while byte-identical
+    // sessions elsewhere are fine - the difference lives in the headset-side
+    // compositor, which no PC-side fix can reach. The cylinder layer gets
+    // its head-look from the compositor BY CONSTRUCTION, so it works on
+    // every machine; it is one press away instead of an ini edit, switches
+    // live (the layer type is chosen per-submit), and SAVE AS DEFAULTS
+    // persists it. Default stays projection (the tuned, user-validated mode).
+    if (g_xrOn) {
+        bool cylNow = (g_xrLayerMode == 1);
+        if (ImGui::Button(cylNow
+                ? "DISPLAY: CURVED SCREEN  (press if view is warped)"
+                : "DISPLAY: FULL VIEW  (press if view is stuck/zoomed)",
+                ImVec2(-1, 0))) {
+            g_xrLayerMode = cylNow ? 0 : 1;
+            g_quadAspect = 0.0f;           // rebuild the eye quads for the mode
+            Log("xr: display mode switched LIVE to %s (overlay)",
+                g_xrLayerMode == 1 ? "CYLINDER" : "PROJECTION");
+        }
+        ImGui::TextDisabled("image frozen in place or zoomed? press the bar above");
     }
     // 32.68: SAVE directly under RECENTER, and everything below it tabbed.
     // Re-applied onto the stable 32.52 base after the resolution work was
@@ -18405,6 +18430,27 @@ static void UpdateVirtualPad()
             xs.Gamepad.bLeftTrigger  = (BYTE)(in.trigL * 255.0f);
             xs.Gamepad.bRightTrigger = (BYTE)(in.trigR * 255.0f);
             if (MeleeActive()) xs.Gamepad.bRightTrigger = 255;
+            // 38.81: "can't use my right stick on Quest" - nothing logged the
+            // right stick, so the loss point is invisible. One line per second
+            // while it is pushed: raw action value vs what the game gets.
+            // No line at all while pushing = the ACTION isn't delivering
+            // (runtime/binding side); raw nonzero but RX 0 = our shaping ate
+            // it (the flags say which); raw and RX both live = game-side.
+            {
+                static double rsLogMs = 0.0;
+                double rsNow = MaimNowMs();
+                if ((in.lk[0] > 0.15f || in.lk[0] < -0.15f ||
+                     in.lk[1] > 0.15f || in.lk[1] < -0.15f) &&
+                    rsNow - rsLogMs > 1000.0) {
+                    rsLogMs = rsNow;
+                    Log("pad/rs: raw=(%.2f,%.2f) -> RX=%d RY=%d "
+                        "(menu=%d/%d cine=%d wheel=%d)",
+                        in.lk[0], in.lk[1],
+                        (int)xs.Gamepad.sThumbRX, (int)xs.Gamepad.sThumbRY,
+                        (int)g_menuOpen, (int)g_inMenu,
+                        (int)CineActive(), (int)g_wheelHeld);
+                }
+            }
         }
     } else if (g_useActions) {
         // ---- modern action-based path (Index native) ----
@@ -18773,7 +18819,18 @@ static void UpdateVirtualPad()
         xs.Gamepad.sThumbRX = 0; xs.Gamepad.sThumbRY = 0;
         xs.Gamepad.bLeftTrigger = 0; xs.Gamepad.bRightTrigger = 0;
     }
-    if (g_menuOpen && active) {
+    // 38.82 THE DEAD RIGHT STICK. The menu flag can GHOST during gameplay
+    // (measured in the user's own Quest log: "sbs: stereo (menu=1 ...)" -
+    // stereo world rendering with the menu flag stuck on; the ghost
+    // detector clears it, but only after seconds, and it can recur). While
+    // the flag is up this block hard-zeroes the RIGHT stick and chops the
+    // left into step pulses - pulses still move you, so it reads as "right
+    // stick dead, left stick works". Menus are MONO by ground truth (the
+    // fork's splice counter: world draws stop when a menu is really up -
+    // the same signal the skc gates trust), so menu shaping now requires
+    // the renderer to AGREE a menu is showing. A real menu is unchanged; a
+    // ghost flag during stereo gameplay can no longer eat the sticks.
+    if (g_menuOpen && g_sbsMonoNow && active) {
         xs.Gamepad.sThumbLX = MenuStep(xs.Gamepad.sThumbLX, 0);
         xs.Gamepad.sThumbLY = MenuStep(xs.Gamepad.sThumbLY, 1);
         xs.Gamepad.sThumbRX = 0;   // one navigation axis only - a second one
@@ -21254,6 +21311,15 @@ static int              g_xrRingHead = 0;
 static bool             g_xrConsOk = false;
 static XrView           g_xrpPubViews[2];      // render -> pace, with content
 static bool             g_xrpPubOk = false;
+// 38.83: freshness travels with the views. If the locate->ring->publish
+// chain stalls anywhere (session state blips, tracking-invalid frames, a
+// timing race - all machine-dependent), g_xrpPubOk used to stay true with
+// FROZEN views, and the layer was stamped with a stale pose forever - a
+// compositor fed frozen stamps pins the image ("fixed in place and moves
+// with me", "zoomed"). Stamps older than 250 ms are now replaced at submit
+// with the pace thread's own freshly located views for THIS frame.
+static double           g_xrRingMs = 0.0;      // when the ring views were located
+static double           g_xrpPubMs = 0.0;      // age carried by the published stamp
 // game -> pace thread: quad geometry (under g_xrCs)
 static float            g_xrpQuadW = 0, g_xrpQuadH = 0,
                         g_xrpQuadCx = 0, g_xrpQuadCy = 0, g_xrpQuadD = 1.8f;
@@ -22012,6 +22078,7 @@ static bool XrRtFrameBegin(void)
                sizeof(g_xrViewRing[0]));
         g_xrRingHead++;
         g_xrConsOk = true;
+        g_xrRingMs = MaimNowMs();          // 38.83: freshness follows the views
     }
     // 38.9: hand poses -> the tracked-device slots every subsystem reads
     bool hOk[2] = { false, false };
@@ -22068,6 +22135,7 @@ static void XrRtPublish(void)
         if (idx < 0) idx = 0;
         memcpy(g_xrpPubViews, g_xrViewRing[idx & 3], sizeof(g_xrpPubViews));
         g_xrpPubOk = true;
+        g_xrpPubMs = g_xrRingMs;           // 38.83: stamp age = views' age
     }
     LeaveCriticalSection(&g_xrCs);
     InterlockedIncrement(&g_xrpSeq);
@@ -22215,11 +22283,29 @@ static DWORD WINAPI XrPaceThread(LPVOID)
         bool cyl = (g_xrLayerMode == 1) && g_xrCylOn;
         bool proj = false;
         XrView pv2[2];
+        double pubAgeMs = 0.0;
         if (g_xrLayerMode == 0) {
             EnterCriticalSection(&g_xrCs);
             proj = g_xrpPubOk;
-            if (proj) memcpy(pv2, g_xrpPubViews, sizeof(pv2));
+            if (proj) {
+                memcpy(pv2, g_xrpPubViews, sizeof(pv2));
+                pubAgeMs = MaimNowMs() - g_xrpPubMs;
+            }
             LeaveCriticalSection(&g_xrCs);
+        }
+        // 38.83: a frozen stamp must never reach the compositor. If the
+        // published views are stale (the locate->ring->publish chain
+        // stalled somewhere), stamp THIS frame's freshly located views -
+        // already in hand from the top of this loop - instead.
+        if (proj && poseOk && pubAgeMs > 250.0) {
+            memcpy(pv2, views, sizeof(pv2));
+            static double staleSaidMs = 0.0;
+            double ssn = MaimNowMs();
+            if (ssn - staleSaidMs > 10000.0) {
+                staleSaidMs = ssn;
+                Log("xr: published view stamp STALE (%.0f ms) - layer stamped "
+                    "with live views instead (frozen-image guard)", pubAgeMs);
+            }
         }
         if (proj && g_xrShownOnce[0] && g_xrShownOnce[1]) {
             for (int eye = 0; eye < 2; eye++) {
