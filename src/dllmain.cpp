@@ -180,6 +180,7 @@ static double   g_scriptHeadMs = 0.0;
 // current pawn, and for a grace window after a pawn latch (spawn/load).
 static double        g_fbPawnMs   = 0.0;  // when the current pawn latched
 static volatile LONG g_fbPvrSince = 0;    // script head write landed since latch
+static double        g_fbBackoffMs = 0.0; // 38.75: watchdog back-off (fallback only)
 static float    g_wpnTestYaw = 0.0f;    // debug: fixed yaw instead of hand
 static int      g_wpnFlipX = 0, g_wpnFlipY = 0;
 
@@ -2113,7 +2114,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.74";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.77";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -8189,9 +8190,13 @@ static void RotInjectTick()
     {
         static int fbHoldWas = 0;
         int fbHold = 0;
+        // 38.76: hold 2 expires 60 s after a spawn - a machine whose script
+        // path never fires must still get the fallback (self-heal, no log
+        // needed); the seat-in window it protected is over long before that.
+        double sinceLatch = MaimNowMs() - g_fbPawnMs;
         if (CineActive())                                fbHold = 1;
-        else if (!g_fbPvrSince)                          fbHold = 2;
-        else if (MaimNowMs() - g_fbPawnMs < 15000.0)     fbHold = 3;
+        else if (!g_fbPvrSince && sinceLatch < 60000.0)  fbHold = 2;
+        else if (sinceLatch < 15000.0)                   fbHold = 3;
         if (fbHold) {
             if (fbHold != fbHoldWas)
                 Log("viewinject: direct fallback HOLDING OFF (%s) - the "
@@ -8204,6 +8209,7 @@ static void RotInjectTick()
         }
         fbHoldWas = 0;
     }
+    if (MaimNowMs() < g_fbBackoffMs) return;   // 38.75: watchdog back-off
     // the script hook drives the view only while its writes are FRESH; a
     // stale claim (save-load killed the event) hands control back here
     if (g_scriptHeadOK && (MaimNowMs() - g_scriptHeadMs) < 750.0) return;
@@ -8289,11 +8295,28 @@ static void RotInjectTick()
     if (headMove < 0) headMove = -headMove;
     if (headMove > 0.02f && r0[1] == prevSeen) stuck++; else stuck = 0;
     prevSeen = r0[1];
+    // 38.75: THE QUEST "CAN'T LOOK UP OR DOWN" REPORTS. This used to set
+    // g_rotInject=false - native injection OFF for the whole session, the
+    // SCRIPT path included, "press F3 to try again" - and drop to mouse
+    // emulation (yaw survives, pitch is eaten in pad mode, the fast path
+    // that drives the hands stops, and on the Quest the frustum-fill quad
+    // no longer matches the render = "zoomed in"). It trips whenever the
+    // engine ignores direct yaw writes while frames flow - a script-owned
+    // camera (the prison intro cutscene right after the skip, loads) with
+    // the player looking around - and at the low frame rates of a fresh
+    // install (shader compilation) 90 frames is a few seconds of casual
+    // head motion. Now: native injection is never touched; the direct
+    // fallback alone backs off for 3 s, then resumes.
     if (stuck > 90) {
-        g_rotInject = false; stuck = 0;
-        MaimHaptic(g_maimHand, 0.4f, 0.20f);
-        Log("viewinject: the engine stopped accepting our writes — reverted to "
-            "mouse emulation (press F3 to try again)");
+        stuck = 0;
+        g_fbBackoffMs = MaimNowMs() + 3000.0;
+        static double lastSaid = 0.0;
+        if (MaimNowMs() - lastSaid > 30000.0) {
+            lastSaid = MaimNowMs();
+            Log("viewinject: engine ignored 90 frames of direct yaw writes "
+                "(script-owned camera?) - direct fallback backing off 3 s; "
+                "native head injection stays ON");
+        }
     }
 }
 
@@ -16592,12 +16615,17 @@ extern "C" void __cdecl PeHandler(void* obj, void* a1, void* a2, void* a3)
     if (g_sbWritePoint == 0) SbApply("script");   // 30.83 oracle, tick-time lane
 
     // fast path: the view-rotation event, every frame
-    if (g_idxViewRot != 0xffffffffu && g_rotInject) {
+    // 38.77: the HAND DRIVE lives on this lane and used to sit behind the
+    // same g_rotInject gate as head injection - so anything that switched
+    // native head tracking off (the old watchdog; [HeadTrack] Native=0)
+    // silently stopped driving the hands too ("hands weren't working").
+    // The event match no longer depends on the flag; only the head write does.
+    if (g_idxViewRot != 0xffffffffu) {
         uint8_t* f = (uint8_t*)a1;
         if (f && !((uintptr_t)f & 3) && RangeReadable(f, kNameOff + 8) &&
             *(uint32_t*)(f + kNameOff) == g_idxViewRot) {
             InterlockedIncrement(&g_pvrHits);   // 30.37b: head-write telemetry
-            ApplyHeadToViewRotation(a2);
+            if (g_rotInject) ApplyHeadToViewRotation(a2);
             ApplyHandToMesh();
             return;
         }
