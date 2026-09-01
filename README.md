@@ -1,9 +1,9 @@
  # Dishonored VR - Discontinued
 
  Currently Only working on Native SteamVR Headsets. Seems to have issues on Quest.
- Discontinued for now. Someone else can pick this up, *
+ Discontinued for now. Someone else can pick this up, 
  
- **I do not have any problems on my PC. But I'm done developing this. I'm burned out.**
+ **I do not have any problems on my PC. But I'm done developing this. I'm burned out On trying to fix problems I can't reproduce**
 
 A  VR conversion of **Dishonored (2012)** true stereo
 rendering, 6DOF head tracking, motion controls, roomscale, and a
