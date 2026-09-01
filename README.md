@@ -1,4 +1,4 @@
- # Dishonored VR - 
+ # Dishonored VR - Discontinued
 
  Currently Only working on Native SteamVR Headsets. Seems to have issues on Quest.
  Discontinued for now. Someone else can pick this up, *
