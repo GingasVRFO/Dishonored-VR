@@ -2185,7 +2185,7 @@ static void BlockCfgLoad();          // defined with the mesh-block machinery
 // everything calibrated over the last few builds - to ship a documentation
 // comment. The [HandRender] section is appended to the live ini instead, and
 // every key falls back to the same defaults through IniFloat if it is absent.
-static const char* kBuildTag = "38.91";  // ALWAYS bump with the deploy
+static const char* kBuildTag = "38.92";  // ALWAYS bump with the deploy
 static const int kConfigVersion = 9; // bump to refresh users' ini with new defaults
 
 static void WriteDefaultIni(const char* ini)
@@ -4200,6 +4200,7 @@ static bool     g_ovlVisible = false;
 static bool     g_ovlInit    = false;
 static WNDPROC  g_ovlOldWndProc = NULL;
 
+static void InstallWindowSubclass(const char* who);   // 38.92 (fwd)
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     // 38.78 THE QUEST "BAM, BROKEN" STATE, from an affected user's log: the
@@ -4256,6 +4257,19 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             return 0;
     }
     return CallWindowProcA(g_ovlOldWndProc, hwnd, msg, wp, lp);
+}
+
+// 38.92: install the game-window subclass exactly once, as early as we know
+// the window. Safe before ImGui exists - the ImGui branch inside is gated on
+// g_ovlInit, and everything we do not handle is forwarded to the game.
+static void InstallWindowSubclass(const char* who)
+{
+    if (g_ovlOldWndProc || !g_gameWnd) return;
+    g_ovlOldWndProc = (WNDPROC)SetWindowLongPtrA(g_gameWnd, GWLP_WNDPROC,
+                                                 (LONG_PTR)OverlayWndProc);
+    if (g_ovlOldWndProc)
+        Log("res: window hook armed at %s - the render size no longer depends "
+            "on how big this monitor is", who);
 }
 
 static void OverlaySaveDefaults()
@@ -4565,8 +4579,7 @@ static void OverlayFrame()
         io.FontGlobalScale = 1.6f;
         ImGui_ImplWin32_Init(g_gameWnd);
         ImGui_ImplDX11_Init(g_dev11, g_ctx11);
-        g_ovlOldWndProc = (WNDPROC)SetWindowLongPtrA(g_gameWnd, GWLP_WNDPROC,
-                                                     (LONG_PTR)OverlayWndProc);
+        InstallWindowSubclass("overlay init");   // 38.92: no-op if already on
         g_ovlInit = true;
         Log("overlay: initialized (F10 toggles)");
     }
@@ -21234,6 +21247,17 @@ static HRESULT __stdcall hkCreateDevice(IDirect3D9* self, UINT adapter,
         pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
         pp ? (int)pp->Windowed : -1);
     if (pp) { g_liveBbW = pp->BackBufferWidth; g_liveBbH = pp->BackBufferHeight; }
+    // 38.92 MONITOR SIZE MUST NOT MATTER. The window hook that tells Windows
+    // "this window may exceed the monitor" (WM_GETMINMAXINFO) and that holds
+    // the client size steady (WM_SIZE) lives in OverlayWndProc - which was
+    // only installed when the ImGui overlay came up, TWENTY-THREE SECONDS
+    // later on a user's machine. Until then the clamp is unopposed, and it is
+    // measurably the monitor's height: a 1080p rig Reset to 3854x1071 and a
+    // 1440p rig to 4032x1431 - both the monitor height minus window chrome,
+    // both a wrong aspect, therefore a wrong vertical FOV, on the exact
+    // machines that report the view "loading in right then going zoomed".
+    // The subclass now goes on the moment the device exists.
+    InstallWindowSubclass("CreateDevice");
     if (SUCCEEDED(hr) && outDev && *outDev) {
         g_gameWnd = wnd ? wnd : (pp ? pp->hDeviceWindow : NULL);
         void* oldPresent = PatchVtable(*outDev, 17, (void*)hkPresent);
