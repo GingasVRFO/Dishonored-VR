@@ -1,5 +1,7 @@
  # Dishonored VR - Discontinued
 
+ New Fork by VOID and Peter parker which fixes a lot of structural issues with this mod https://github.com/VR-Stereo-Hub/Dishonored-VR?tab=readme-ov-file
+
  Currently Only working on Native SteamVR Headsets. Seems to have issues on Quest.
  Discontinued for now. Someone else can pick this up, 
  
